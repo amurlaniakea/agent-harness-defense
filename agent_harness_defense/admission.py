@@ -126,6 +126,11 @@ class LoopStateMonitor:
     (0.5) so a SINGLE fragment stays below the correlation threshold (0.5 < 1.0), but
     two or more weak fragments across iterations accumulate and separate attack from
     noise — exactly the fragmented-evidence separation the paper proves.
+
+    NOTE on integration: this class RETAINs state ONLY if the caller reuses the same
+    instance across loop iterations. The library does not orchestrate a real agent
+    loop; the harness that integrates `run_admission` is responsible for keeping the
+    monitor alive between calls. See `KNOWN_ISSUES.md` §4.
     """
 
     signals: list[dict[str, Any]] = field(default_factory=list)
