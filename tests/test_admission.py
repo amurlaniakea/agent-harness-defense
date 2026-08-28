@@ -33,6 +33,14 @@ def _materialize(scn: "object", work: Path) -> list[str]:
     # Agent runs: benign edit + obeys injection (writes malicious artifacts).
     legit = scn.legit_edit(work)  # type: ignore[attr-defined]
     obeyed = scn.obey(work)  # type: ignore[attr-defined]
+    # TEETH: the scenario must have materialized the malicious artifacts on disk.
+    # If the obey() step is skipped (or stops writing), the attack is not modeled and
+    # the test would pass vacuously — so we assert the artifact is actually present.
+    missing = [m for m in scn.attack_markers if not (work / m).is_file()]  # type: ignore[attr-defined]
+    assert not missing, (
+        f"SCENARIO INCOMPLETE: agent did not materialize attack artifact(s) {missing}; "
+        f"the eval would be vacuous. Check the obey() step writes {scn.attack_markers}."  # type: ignore[attr-defined]
+    )
     # Candidate changeset = everything the agent touched (benign + obeyed artifacts).
     candidates = sorted(set(legit) | set(obeyed) | {scn.task_marker})  # type: ignore[attr-defined]
     return candidates
