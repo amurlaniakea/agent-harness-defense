@@ -208,6 +208,23 @@ def _candidate_files(repo_path: Path, proposed_files: list[str] | None) -> list[
     ]
 
 
+def _scan_targets(repo_path: Path) -> list[str]:
+    """Files the cross-iteration monitor observes: ALL untrusted repo text.
+
+    The monitor looks for escalation evidence in untrusted input (where the
+    attacker plants instructions), not in the agent's output artifacts. The
+    candidate changeset (proposed_files) is a separate concept and is used only
+    for the admission decision. Conflating them — as an earlier revision did —
+    let `escalation_detected` come from a coincidental substring in the agent's
+    own output rather than from the planted injection.
+    """
+    return [
+        str(f.relative_to(repo_path))
+        for f in repo_path.rglob("*")
+        if f.is_file() and not str(f.relative_to(repo_path)).startswith((".git", ".signetry"))
+    ]
+
+
 def run_admission(
     repo_path: Path,
     label: str,
@@ -219,10 +236,13 @@ def run_admission(
     """Compute the ADMITTED subset of the agent's on-disk edits.
 
     The repo at ``repo_path`` already contains the agent's edits, including any
-    artifacts it produced by obeying injected repo text. We label each file's
-    privilege level, scan LOW-privilege repo text for escalation triggers (feeding
-    the cross-iteration monitor), and QUARANTINE forbidden-path artifacts out of the
-    admitted changeset.
+    artifacts it produced by obeying injected repo text. We:
+
+    1. Label every file the agent *touched* (candidates) with an instruction
+       level — provenance of the escalation decision.
+    2. Scan ALL untrusted repo text (input where the injection lives, not just
+       candidates) and feed the cross-iteration monitor with that evidence.
+    3. Quarantine forbidden-path artifacts out of the admitted changeset.
     """
     repo_path = Path(repo_path)
     monitor = loop_monitor or LoopStateMonitor()
@@ -237,8 +257,11 @@ def run_admission(
     # 1) Taint labeling: every candidate file carries an instruction level.
     taint: dict[str, int] = {rel: int(_level_of_file(rel)) for rel in candidates}
 
-    # 2) Scan LOW-privilege repo text for escalation triggers -> feed loop monitor.
-    for rel in candidates:
+    # 2) Scan ALL untrusted repo text (input where the injection lives).
+    #    The monitor is a separate concern from the admission decision: it
+    #    observes the planted instruction in README/CLAUDE.md, not the agent's
+    #    output. A previous revision conflated them; that was the bug.
+    for rel in _scan_targets(repo_path):
         f = repo_path / rel
         try:
             text = f.read_text(errors="replace")
