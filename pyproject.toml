@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-harness-defense"
+version = "0.1.0"
+description = "Open admission-layer defense for LLM agent harnesses: taint/info-flow control + cross-iteration state monitor, evaluated against the Signetry adversarial corpus."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "AGPL-3.0-or-later" }
+authors = [{ name = "Pedro Sordo Martínez", email = "amurlaniakea@gmail.com" }]
+keywords = ["llm-agent", "security", "info-flow-control", "prompt-injection", "agent-harness"]
+dependencies = [
+    "pydantic>=2.13.5",
+    "typer>=0.27.2",
+    "llm-guard>=0.3.16",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+eval = ["signetry-eval @ git+https://github.com/Signetry/eval.git"]
+dev = ["ruff", "pytest", "bandit", "gitleaks"]
+
+[project.scripts]
+ahd = "agent_harness_defense.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["agent_harness_defense"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "C4"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
