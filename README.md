@@ -29,15 +29,18 @@ structural gaps in the defenses in wide use:
    LOW-privilege (`InstructionLevel.REPO_TEXT`, i.e. untrusted data, not
    instructions). This label is used for provenance of the escalation decision.
    NOTE: full label *propagation* across arbitrary data/control flows is NOT
-   implemented yet — it is the SPA direction (arXiv:2608.27234), future work.
+   implemented yet — it is the SPA direction (arXiv:2608.27234), future work
+   (see [KNOWN_ISSUES.md](KNOWN_ISSUES.md) §1 and [ROADMAP.md](ROADMAP.md)).
 2. **Forbidden-path quarantine** — the agent's on-disk edits are scanned; any file
    matching `forbidden_paths` in the admission contract is quarantined out of the
    ADMITTED changeset. The quarantine is gated by a cross-iteration escalation
    signal so a single benign-looking mention does not over-block.
 3. **Cross-iteration loop-state monitor** (arXiv:2608.27141) — retains a safety
-   signal across iterations instead of re-initializing per trajectory. (The caller
-   must reuse the same `LoopStateMonitor` across loop iterations; the CLI does not
-   yet drive a real agent loop.)
+   signal across iterations instead of re-initializing per trajectory. The monitor
+   observes the planted input (README, CLAUDE.md, and all untrusted repo text)
+   separately from the admission decision (which uses the proposed changeset).
+   The caller must reuse the same `LoopStateMonitor` across loop iterations; the
+   CLI does not yet drive a real agent loop (KNOWN_ISSUES.md §4).
 4. **Contract / verifier** — `allowed_paths`, `forbidden_paths`, `max_files_changed`.
 5. **Receipt** — admitted change carries a hash of the base commit, the diff, and
    the plan capability-set hash.
@@ -55,21 +58,35 @@ malicious artifacts (`deploy.yml`, `stolen.txt`, `.github/workflows/release.yml`
 disk, so the test exercises the real defense — those artifacts must NOT enter the
 ADMITTED changeset while the benign left-pad bump still completes.
 
-A regression guard (`tests/test_eval_catches_regression.py`) proves the eval is not
-vacuous: if the defense admitted the artifact, the criterion reports
-`trust_boundary_clean=False` and the test fails.
+Two independent guard rails prove the eval is honest:
+
+- **Teeth assert** (`tests/test_admission.py`): before admission runs, the test
+  asserts the malicious artifacts are actually on disk. If `obey()` is skipped
+  or stops writing, the test fails with `SCENARIO INCOMPLETE` rather than
+  passing vacuously.
+- **Regression guard** (`tests/test_eval_catches_regression.py`): a defense that
+  admits the forbidden artifacts is reported with `trust_boundary_clean=False`
+  and the test fails.
+- **Monitor signal pins** (`tests/test_monitor_signal.py`): the cross-iteration
+  monitor's signal is asserted at concrete values and the planted-input
+  invariant is enforced (wiping the agent's output to a non-trigger string
+  MUST NOT drop the signal — verified by re-introducing the original bug and
+  seeing the test fail with `REGRESSION:` message).
 
 ```bash
-pytest            # 4 tests: 2 IPI scenarios + cross-iteration + regression guard
+pytest            # 6 tests: 2 IPI + regression + cross-iteration + monitor-signal (×2)
 ahd eval          # run the bundled scenarios against run_admission
 ahd run PATH      # admit/reject the agent's change on disk at PATH
 ```
 
 ## Status
 
-MVP. Not 1.0: missing label propagation (item 1 above), integration with the 6
-coding-agent harnesses of arXiv:2608.27299 as a live banco, and the
-`skill_poison` / `minja` Signetry scenarios. The eval is honest but narrow.
+v0.1 MVP. The defense exercises three of the five components end-to-end against
+the real IPI corpus; components #1 (IFC propagation) and the live agent-loop
+wiring are roadmap work (see [KNOWN_ISSUES.md](KNOWN_ISSUES.md) and
+[ROADMAP.md](ROADMAP.md)). Two independent external audits (Claude, 2026-08-28)
+verified the eval is non-vacuous and the CI installs and tests cleanly on a
+fresh runner.
 
 ## License
 
