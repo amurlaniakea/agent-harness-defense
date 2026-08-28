@@ -20,7 +20,11 @@ dependencies = [
 [project.optional-dependencies]
 eval = ["signetry-eval @ git+https://github.com/Signetry/eval.git"]
 detect = ["llm-guard>=0.3.16"]  # optional injection-detection signal, not required by core
-dev = ["ruff", "pytest", "bandit", "gitleaks"]
+dev = ["ruff", "pytest", "bandit"]
+
+[tool.hatch.metadata]
+# Required because the `eval` extra uses a direct git URL (PEP 660 / hatchling gate).
+allow-direct-references = true
 
 [project.scripts]
 ahd = "agent_harness_defense.cli:app"
