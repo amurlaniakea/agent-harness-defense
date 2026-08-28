@@ -14,12 +14,12 @@ keywords = ["llm-agent", "security", "info-flow-control", "prompt-injection", "a
 dependencies = [
     "pydantic>=2.13.5",
     "typer>=0.27.2",
-    "llm-guard>=0.3.16",
     "rich>=13.0.0",
 ]
 
 [project.optional-dependencies]
 eval = ["signetry-eval @ git+https://github.com/Signetry/eval.git"]
+detect = ["llm-guard>=0.3.16"]  # optional injection-detection signal, not required by core
 dev = ["ruff", "pytest", "bandit", "gitleaks"]
 
 [project.scripts]

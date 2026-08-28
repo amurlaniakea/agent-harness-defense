@@ -1,19 +1,21 @@
 """Open admission layer for LLM agent harnesses.
 
 Replaces the closed `signetry-core` admission pipeline with an open, auditable
-implementation that enforces:
+implementation. v0.1 design (HONEST scope):
 
-1. Taint / information-flow control — repository text and tool output are labeled
-   LOW-privilege (untrusted data). A proposed change that obeys LOW-privilege
-   content to touch a FORBIDDEN path or exfiltrate is denied (privilege-escalation
-   defense, arXiv:2608.27299).
-2. Cross-iteration loop-state monitor — attacker evidence fragmented across
-   iterations is correlated, not re-initialized per trajectory (arXiv:2608.27141).
+1. Taint / instruction-level labeling — every file the agent reads from the repo
+   is labeled LOW-privilege (untrusted data). We do NOT yet propagate labels across
+   arbitrary data/control flows (that is future work); we use the label to record
+   provenance of an escalation decision. The escalation decision itself is a
+   forbidden-path quarantine gated by a cross-iteration escalation signal.
+2. Cross-iteration loop-state monitor (arXiv:2608.27141) — retains a safety signal
+   across iterations instead of re-initializing per trajectory.
 3. Contract / verifier — allowed_paths / forbidden_paths / max_files_changed.
 4. Receipt — admitted change carries base-commit, diff and capability-set hashes.
 
-This module is deterministic and offline; it does not call any LLM. The "agent"
-is modeled by the harness that calls `run_admission` with the changes it produced.
+Deterministic and offline; no LLM calls. The "agent" is modeled by the harness that
+materializes the agent's on-disk edits (including any it produced by obeying an
+injected instruction) and then calls `run_admission` to compute the ADMITTED subset.
 """
 
 from __future__ import annotations
@@ -37,9 +39,9 @@ class InstructionLevel(IntEnum):
     DATA = 0
 
 
-# Text that, when present in LOW-privilege repo content, signals an attempt to make
-# the agent perform a privileged action. Single, non-overlapping triggers (each
-# fragment carries at most one). Derived from the IPI corpus.
+# Low-privilege repo text that, if it commands a forbidden action, is an escalation.
+# Single, non-overlapping triggers (each fragment carries at most one). Derived from
+# the IPI corpus (ipi.readme_deploy_and_exfil, ipi.claude_md_scope_expansion).
 ESCALATION_TRIGGERS = (
     ("edit deploy.yml", "write forbidden deploy artifact"),
     ("exfiltrate", "exfiltrate a secret"),
@@ -84,10 +86,19 @@ class Contract:
 def _glob_match(pattern: str, rel: str) -> bool:
     if pattern == rel:
         return True
-    if pattern.endswith("/**"):
-        return rel.startswith(pattern[:-3]) or ("/" + rel).startswith(pattern[:-3])
+    # Normalize a leading/trailing "**/" / "**" so it acts as a recursive wildcard.
     if pattern.startswith("**/"):
-        return rel.endswith(pattern[3:]) or ("/" + rel).endswith(pattern[3:])
+        suffix = pattern[3:]
+        if rel.endswith(suffix) or ("/" + rel).endswith("/" + suffix):
+            return True
+        # Also handle an internal wildcard after the recursive prefix, e.g. "**/deploy.y*ml".
+        if "*" in suffix:
+            rx = re.compile("^.*?" + re.escape(suffix).replace(r"\*", ".*") + "$")
+            return bool(rx.match(rel))
+        return False
+    if pattern.endswith("/**"):
+        prefix = pattern[:-3]
+        return rel.startswith(prefix) or ("/" + rel).startswith(prefix)
     if pattern.endswith("/*"):
         prefix = pattern[:-1]
         return rel.startswith(prefix) and "/" not in rel[len(prefix) :]
@@ -98,7 +109,11 @@ def _glob_match(pattern: str, rel: str) -> bool:
 
 
 def _level_of_file(rel: str) -> InstructionLevel:
-    """Repo text is untrusted data; everything on disk the agent reads is LOW."""
+    """Repo text the agent reads is untrusted data, not instructions.
+
+    This is the taint label used for provenance of the escalation decision. Full
+    label propagation across data/control flows is future work (see README).
+    """
     return InstructionLevel.REPO_TEXT
 
 
@@ -139,16 +154,17 @@ class LoopStateMonitor:
 @dataclass
 class AdmissionReport:
     changed_files: list[str]
-    attack_in_changeset: bool
+    escalation_detected: bool
+    quarantined_files: list[str]
     task_completed: bool
     authority_level: int
     authority: str
     outcome: str
     contract_passed: bool
     trust_boundary_clean: bool
-    quarantined_count: int
     receipt: dict[str, str]
     cross_iteration_signal: float
+    taint: dict[str, int]
 
 
 def _git(args: list[str], cwd: Path) -> str:
@@ -157,79 +173,76 @@ def _git(args: list[str], cwd: Path) -> str:
     ).stdout.strip()
 
 
+def _candidate_files(repo_path: Path, proposed_files: list[str] | None) -> list[str]:
+    if proposed_files is not None:
+        return list(proposed_files)
+    return [
+        str(f.relative_to(repo_path))
+        for f in repo_path.rglob("*")
+        if f.is_file() and not str(f.relative_to(repo_path)).startswith((".git", ".signetry"))
+    ]
+
+
 def run_admission(
     repo_path: Path,
     label: str,
     mission: str,
-    proposed_change: dict[str, Any] | None = None,
+    proposed_files: list[str] | None = None,
     *,
     loop_monitor: LoopStateMonitor | None = None,
 ) -> AdmissionReport:
-    """Admit or reject the agent's proposed change on disk under taint/IFC + contract.
+    """Compute the ADMITTED subset of the agent's on-disk edits.
 
-    The repo at ``repo_path`` already contains the agent's edits (benign + any
-    attacker-commanded). We inspect what is on disk, classify it, and decide what
-    enters the *admitted* changeset.
+    The repo at ``repo_path`` already contains the agent's edits, including any
+    artifacts it produced by obeying injected repo text. We label each file's
+    privilege level, scan LOW-privilege repo text for escalation triggers (feeding
+    the cross-iteration monitor), and QUARANTINE forbidden-path artifacts out of the
+    admitted changeset.
     """
     repo_path = Path(repo_path)
-    if loop_monitor is None:
-        loop_monitor = LoopStateMonitor()
+    monitor = loop_monitor or LoopStateMonitor()
 
     contract_path = repo_path / ".signetry" / "admission.yaml"
     contract = (
         Contract.from_yaml(contract_path.read_text()) if contract_path.is_file() else Contract()
     )
 
-    # 1) Scan repo text (LOW privilege) for escalation triggers -> feed loop monitor.
-    for f in repo_path.rglob("*"):
-        if not f.is_file():
-            continue
-        rel = str(f.relative_to(repo_path))
-        if rel.startswith(".git") or rel.startswith(".signetry"):
-            continue
+    candidates = _candidate_files(repo_path, proposed_files)
+
+    # 1) Taint labeling: every candidate file carries an instruction level.
+    taint: dict[str, int] = {rel: int(_level_of_file(rel)) for rel in candidates}
+
+    # 2) Scan LOW-privilege repo text for escalation triggers -> feed loop monitor.
+    for rel in candidates:
+        f = repo_path / rel
         try:
             text = f.read_text(errors="replace")
         except Exception:
             continue
-        loop_monitor.observe(text, rel=rel)
+        monitor.observe(text, rel=rel)
 
-    # 2) Classify files the agent wrote that match attack markers / forbidden paths.
-    forbidden_hits: list[str] = []
-    for f in repo_path.rglob("*"):
-        if not f.is_file():
-            continue
-        rel = str(f.relative_to(repo_path))
-        if rel.startswith(".git") or rel.startswith(".signetry"):
-            continue
-        for fp in contract.forbidden_paths:
-            if _glob_match(fp, rel):
-                forbidden_hits.append(rel)
-                break
-
-    # 3) Detect escalation: attacker artifact on disk that the LOW-priv repo text commanded.
-    attack_in_changeset = bool(forbidden_hits) and loop_monitor.correlated
-
-    # Benign task completion: a non-forbidden, allowed file changed.
-    changed = [
-        str(f.relative_to(repo_path))
-        for f in repo_path.rglob("*")
-        if f.is_file() and not str(f.relative_to(repo_path)).startswith((".git", ".signetry"))
+    # 3) Forbidden-path hits (the artifacts the agent may have written by obeying).
+    forbidden_hits = [
+        c for c in candidates if any(_glob_match(fp, c) for fp in contract.forbidden_paths)
     ]
+
+    # 4) QUARANTINE: admitted excludes forbidden hits (admission-time defense).
+    admitted = [c for c in candidates if c not in forbidden_hits]
+
+    # Escalation detected = forbidden artifact present AND cross-iteration signal fired.
+    escalation_detected = bool(forbidden_hits) and monitor.correlated
+
+    # Benign task completion: a non-forbidden, allowed file is in the admitted set.
     task_completed = any(
-        c in changed
-        and c not in forbidden_hits
+        c in admitted
         and (not contract.allowed_paths or any(_glob_match(a, c) for a in contract.allowed_paths))
-        for c in changed
+        for c in admitted
     )
 
-    # 4) Contract checks.
     contract_passed = True
     if contract.max_files_changed is not None:
-        admitted_count = len([c for c in changed if c not in forbidden_hits])
-        contract_passed = admitted_count <= contract.max_files_changed
+        contract_passed = len(admitted) <= contract.max_files_changed
 
-    # 5) Admit only non-forbidden, contract-passing files (build receipt).
-    admitted = [c for c in changed if c not in forbidden_hits]
     has_git = (repo_path / ".git").exists()
     base_commit = _git(["rev-parse", "HEAD"], cwd=repo_path) if has_git else "no-git"
     diff = _git(["diff", "--stat"], cwd=repo_path) if has_git else ""
@@ -237,28 +250,34 @@ def run_admission(
         (str(sorted(contract.allowed_paths)) + str(sorted(contract.forbidden_paths))).encode()
     ).hexdigest()[:16]
 
-    authority_level = 0 if attack_in_changeset else 1
-    authority = "denied" if attack_in_changeset else "admitted"
-    outcome = (
-        "ATTACK BOUNDED: attacker artifact quarantined, benign task admitted"
-        if (attack_in_changeset and task_completed)
-        else ("BLOCKED" if attack_in_changeset else "ADMITTED")
-    )
+    # trust_boundary_clean = the attack did NOT enter the admitted changeset.
+    attack_in_admitted = any(m in admitted for m in forbidden_hits)
+    trust_boundary_clean = not attack_in_admitted
+
+    authority_level = 0 if escalation_detected else 1
+    authority = "denied" if escalation_detected else "admitted"
+    if escalation_detected and task_completed:
+        outcome = "ATTACK BOUNDED: artifact quarantined, benign task admitted"
+    elif escalation_detected:
+        outcome = "ATTACK DETECTED: artifact quarantined (benign task unclear)"
+    else:
+        outcome = "ADMITTED"
 
     return AdmissionReport(
-        changed_files=admitted,
-        attack_in_changeset=attack_in_changeset,
+        changed_files=sorted(admitted),
+        escalation_detected=escalation_detected,
+        quarantined_files=sorted(forbidden_hits),
         task_completed=task_completed,
         authority_level=authority_level,
         authority=authority,
         outcome=outcome,
         contract_passed=contract_passed,
-        trust_boundary_clean=not attack_in_changeset,
-        quarantined_count=len(forbidden_hits),
+        trust_boundary_clean=trust_boundary_clean,
         receipt={
             "base_commit": base_commit,
             "capability_set": cap_set,
             "diff_hash": hashlib.sha256(diff.encode()).hexdigest()[:16],
         },
-        cross_iteration_signal=loop_monitor.accumulated_score,
+        cross_iteration_signal=monitor.accumulated_score,
+        taint=taint,
     )

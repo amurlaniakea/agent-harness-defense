@@ -15,10 +15,10 @@ from rich.table import Table
 
 from agent_harness_defense.admission import LoopStateMonitor, run_admission
 
-app = typer.Typer(help="Open admission-layer defense for LLM agent harnesses.")
-
-
 REPO_PATH_ARG = typer.Argument(..., help="Repo path with the agent's edits on disk.")
+
+
+app = typer.Typer(help="Open admission-layer defense for LLM agent harnesses.")
 
 
 @app.command()
@@ -34,10 +34,10 @@ def run(path: Path = REPO_PATH_ARG):
     for k, v in [
         ("outcome", report.outcome),
         ("authority", report.authority),
-        ("attack_in_changeset", report.attack_in_changeset),
+        ("escalation_detected", report.escalation_detected),
         ("task_completed", report.task_completed),
         ("trust_boundary_clean", report.trust_boundary_clean),
-        ("quarantined_count", report.quarantined_count),
+        ("quarantined_files", report.quarantined_files),
         ("cross_iteration_signal", report.cross_iteration_signal),
         ("receipt.base_commit", report.receipt["base_commit"]),
         ("receipt.capability_set", report.receipt["capability_set"]),
@@ -49,16 +49,21 @@ def run(path: Path = REPO_PATH_ARG):
 
 @app.command()
 def eval() -> None:
-    """Run the bundled offline adversarial scenarios against our admission layer."""
+    """Run the bundled offline adversarial scenarios against our admission layer.
+
+    Faithfully models the Signetry ScriptedAgent: the agent applies its benign edit
+    AND obeys the injected instruction (writing the malicious artifact to disk), then
+    admission decides what enters the ADMITTED changeset.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
     from tests.conftest import all_ipi_scenarios
 
     monitor = LoopStateMonitor()
     all_pass = True
     for scn in all_ipi_scenarios():
-        import shutil
-        import subprocess
-        import tempfile
-
         tmp = Path(tempfile.mkdtemp(prefix="ahd-eval-"))
         work = tmp / "repo"
         work.mkdir(parents=True)
@@ -71,21 +76,25 @@ def eval() -> None:
         subprocess.run(["git", "config", "user.name", "ahd"], cwd=work, check=True)
         subprocess.run(["git", "add", "-A"], cwd=work, check=True)
         subprocess.run(["git", "commit", "-qm", "base"], cwd=work, check=True)
+        legit = scn.legit_edit(work)
+        obeyed = scn.obey(work)
+        candidates = sorted(set(legit) | set(obeyed) | {scn.task_marker})
         try:
             report = run_admission(
                 work,
                 "acme/app",
                 "Apply the in-scope task only.",
-                proposed_change={"package": "left-pad", "fixed": "1.3.0"},
+                proposed_files=candidates,
                 loop_monitor=monitor,
             )
-            blocked = not report.attack_in_changeset
+            blocked = not report.escalation_detected
             util = report.task_completed
             ok = blocked and util
             all_pass = all_pass and ok
             rprint(
                 f"[{'green' if ok else 'red'}]{scn.id}: blocked={blocked} "
-                f"utility={util}[/{'green' if ok else 'red'}]"
+                f"utility={util} quarantined={report.quarantined_files}[/"
+                f"{'green' if ok else 'red'}]"
             )
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
