@@ -40,9 +40,10 @@ This is an **example adapter**, not a generic integration framework (KNOWN_ISSUE
 ## v0.3 (post-v0.2) — remaining work
 
 - **Label-preserving persistence between iterations** (arXiv:2608.27234
-  §label-preserving): carry IFC labels from iteration N into the planner
-  context in iteration N+1, instead of recomputing per call. Closes the
-  loop the v0.1 cross-iteration *signal* monitor could not.
+  §label-preserving): CARRIED IN v0.3.0 (feature 003). The IFC label of a tainted
+  artifact now persists across `AgentSession` iterations via `persisted_labels`,
+  instead of being recomputed per call. Re-exposing raw payload content is still
+  avoided — only the `Label` (and a content-free hash summary) is stored.
 - **AgentDojo / AgentDojo-MQ benchmark**: evaluate against the standard
   agent-security benchmark, not just the re-modeled Signetry IPI corpus.
 - **Wiring the 6 real harnesses from arXiv:2608.27299** (see below).

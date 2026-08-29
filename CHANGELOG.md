@@ -4,6 +4,41 @@ All notable changes to `agent-harness-defense` are documented here. The format
 is loosely based on [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] — 2026-08-29 (feature 003: label-preserving persistence)
+
+Closes the v0.3 remaining-work item (arXiv:2608.27234 §label-preserving). Builds on
+the `AgentSession` from feature 002.
+
+### Added
+- `agent_harness_defense.adapter.persistence.PersistedArtifact` — remembers a tainted
+  artifact across iterations. Stores ONLY the IFC `Label` + a content-free hash
+  `summary` (`sha256(path + reason)[:16]`); the artifact content is never stored or
+  re-exposed (honest scope, C1).
+- `evaluate_plan(..., persisted_labels: dict[str, Label] | None = None)` and
+  `run_admission(..., persisted_labels=...)`: re-inject taints from previous
+  iterations. Joined before the `depends_on` join, so a persisted UNTRUSTED label
+  sinks the step (integrity join is `min`) and propagates downstream.
+- `AgentSession.persisted_artifacts` + auto-recording: after each `step`, every
+  tainted path is recorded and re-injected into the next iteration. Idempotent per
+  path.
+- 5 new tests `test_persistence.py` (AC-PERS-1..5). The 2-iteration scenario is
+  non-vacuous: iter-2 write is **admitted** without persistence and **denied** with
+  it.
+
+### Backward compatibility
+- `persisted_labels` defaults to `None` → behaviour identical to v0.2 (the 23 v0.2 +
+  14 adapter tests stay green). No breaking API change to `evaluate_plan`/`run_admission`.
+
+### Out of scope (documented)
+- Declassification of a persisted taint (the taint persists while the session lives;
+  a caller can clear `persisted_artifacts`). A disk/Redis backend (the
+  `persisted_labels_from` interface is exposed for callers to provide one).
+
+### Notes
+- Version bumped 0.2.0 → 0.3.0. Feature 002's example adapter is included (it was
+  delivered on the `feat/002-real-adapter` branch and merged into this branch so 003
+  builds on top of it; 002 also stands alone as PR #3).
+
 ## [0.2-adapter / feature 002] — 2026-08-29 (v0.3-precursor, no version bump yet)
 
 Feature 002 ships an example adapter that connects the IFC to real Anthropic
@@ -38,8 +73,8 @@ tool-calling. The version stays 0.2.0; the v0.3.0 bump lands with feature 003
   default is now `depends_on=[]`; a step depends on something ONLY via an EXPLICIT
   agent-supplied `content_ref`/`value_ref` (`step_<k>.content`). The realistic
   "teeth" tests model the attacker DECLARING the dependency (the only case the IFC can
-  honestly catch). Trade-off: FALSE NEGATIVES for undeclared dependencies (documented
-  in KNOWN_ISSUES §6). New guardrail `test_adapter_false_positive_scale_*` locks this.
+  honestly catch). Trade-off: FALSE NEGATIVES for undeclared dependencies (documented in
+  KNOWN_ISSUES §6). New guardrail `test_adapter_false_positive_scale_*` locks this.
 
 ### Notes / honest scope
 - This is an **example adapter**, not a generic agent-integration framework

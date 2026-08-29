@@ -3,11 +3,11 @@
 This file tracks limitations and pending work that affect what the project can
 honestly claim. Each entry references the audit / paper that motivated it.
 
-## 1. Label-preserving persistence between iterations is NOT implemented (CRÍTICO 2, re-scoped 2026-08-29)
+## 1. Label-preserving persistence between iterations — CLOSED in v0.3.0 (CRÍTICO 2, re-scoped 2026-08-29)
 
-**Status:** Implemented in v0.2.0 — see `ROADMAP.md` for the direction.
+**Status:** Implemented in v0.3.0 (feature 003). See `ROADMAP.md` and `adapter/persistence.py`.
 
-**What the code does now (v0.2.0 + adapter 002):**
+**What the code does now (v0.2.0 + adapter 002 + persistence 003):**
 - Dual-lattice IFC (confidentiality + integrity) over an explicit
   declarative `Plan` (`agent_harness_defense.ifc`). `SourceTag`,
   `Label` (componentwise join: confidentiality = max, integrity = min),
@@ -21,16 +21,26 @@ honestly claim. Each entry references the audit / paper that motivated it.
   RETAINED as a SECOND signal (`flagged_by_keyword` /
   `cross_iteration_signal`), never authoritative.
 
-**What the code does NOT do yet (stage 1 of the plan):**
-- Label-preserving persistence between iterations — once the IFC flags a
-  payload in iteration N, that label is not carried into the planner's
-  context in iteration N+1 (arXiv:2608.27234 §label-preserving). The
-  monitor retains cross-iteration *signal*, but the *IFC label* is
-  recomputed per call. This is the remaining v0.3 item.
+**Label-preserving persistence (v0.3.0, feature 003) — now closed:**
+- `adapter/persistence.py` defines `PersistedArtifact(path_or_id, label, summary, iteration)`.
+  Only the IFC **result** is stored — `label` (a pair of ints) plus a content-free
+  hash `summary` (`sha256(path + reason)[:16]`). The artifact **content** is never
+  stored or re-exposed (arXiv:2608.27234 §label-preserving).
+- `AgentSession` records a `PersistedArtifact` for every tainted path after each
+  `step`, and re-injects those labels into the next iteration via
+  `run_admission(persisted_labels=...)`. Because the integrity join is `min`, a
+  persisted UNTRUSTED label sinks the step and propagates to downstream steps
+  through `depends_on`.
+- `evaluate_plan`/`run_admission` take an optional `persisted_labels: dict[str, Label]`
+  (default `None` → identical to v0.2, AC-PERS-5). Declassification is explicitly
+  out of scope (documented); the taint persists while the `AgentSession` lives.
+- 5 new tests (`test_persistence.py`, AC-PERS-1..5) cover the shape, the 2-iteration
+  non-vacuous scenario, and content-free summaries.
 
-**Why it is honest to call this v0.2:** the README's "Approach" section
-now states the dual-lattice IFC explicitly. The roadmap (see `ROADMAP.md`)
-sketches the persistence work needed to close the loop fully.
+**Why it is honest to call v0.3.0 complete:** the planner cannot be re-fed a tainted
+source as if clean across iterations, and the eval proves it (a 2-iteration test
+flips iter-2 from admitted → denied when persistence is on, and stays admitted when
+off).
 
 ## 2. `llm-guard` is an optional detection signal, not a runtime dep (MENOR 1)
 
@@ -84,9 +94,8 @@ shell can move data the Plan never sees (verified in Spec 002 §2.1).
 
 ## 6. Adapter does NOT infer cross-step dependencies (audited 2026-08-29)
 
-**Status:** Fixed in adapter 002 (commit on `feat/002-real-adapter`).
-Documented here so the trade-off is explicit. The same fix is included in
-`feat/003-label-persistence` via the merge of this branch.
+**Status:** Fixed in adapter 002 (commit on `feat/002-real-adapter`, also in
+`feat/003-label-persistence` via merge). Documented here so the trade-off is explicit.
 
 **What happened:** the original `_depends_on_for()` chained every `tool_call` to
 its immediate predecessor by temporal order (`depends_on=[prev_id]`). Because the
