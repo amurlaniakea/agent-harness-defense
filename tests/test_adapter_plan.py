@@ -79,12 +79,27 @@ def test_bash_maps_to_execute_repo_cmd_fail_closed():
     assert "integrity_violation" in verdict.denied_reasons[step.id]
 
 
-def test_read_then_write_propagates_untrusted():
-    """The realistic teeth: README (UNTRUSTED) taints the write via depends_on."""
+def test_read_then_write_declared_dep_propagates_untrusted():
+    """The realistic teeth, HONEST version (C1): the agent must DECLARE it uses
+    the read content. Only then does the untrusted README taint the write.
+
+    Without an explicit content_ref the adapter does NOT infer the dependency
+    (would otherwise taint every later write — the false-positive avalanche that
+    the 2026-08-29 audit caught). A non-declared read->write is a (documented)
+    false negative, not a denial.
+    """
+    # Malicious-but-declared: agent writes the README's content into the report.
     plan = build_plan(
         [
             ToolCall(name="read_file", args={"path": "README.md"}),
-            ToolCall(name="write_file", args={"path": "incident-report.md", "content": "x"}),
+            ToolCall(
+                name="write_file",
+                args={
+                    "path": "incident-report.md",
+                    "content_ref": "step_1.content",
+                    "content": "x",
+                },
+            ),
         ],
         _session(),
     )
@@ -94,19 +109,42 @@ def test_read_then_write_propagates_untrusted():
     assert "integrity_violation" in verdict.denied_reasons["step_2"]
 
 
-def test_explicit_content_ref_overrides_sequential_chain():
-    """If the agent returns content_ref=step_3.content, depend on step_3."""
+def test_read_then_unrelated_write_is_not_denied():
+    """C1 false-negative guard: an undeclared read->write does NOT taint.
+
+    This is the case the 2026-08-29 audit proved was broken before the fix
+    (every later write got denied). Now it must be admitted — the adapter does
+    not infer dependencies the agent never declared.
+    """
     plan = build_plan(
         [
-            ToolCall(name="read_file", args={"path": "a.md"}),
-            ToolCall(name="read_file", args={"path": "b.md"}),
-            ToolCall(name="read_file", args={"path": "c.md"}),
-            ToolCall(
-                name="write_file",
-                args={"path": "out.md", "content": "x", "content_ref": "step_3.content"},
-            ),
+            ToolCall(name="read_file", args={"path": "README.md"}),
+            ToolCall(name="write_file", args={"path": "incident-report.md", "content": "x"}),
         ],
         _session(),
     )
-    assert plan.steps[3].depends_on == ["step_3"]
-    assert plan.steps[3].depends_on != ["step_3"] or True  # chain would be step_3 anyway here
+    assert plan.steps[1].depends_on == []  # no implicit chain
+    verdict = evaluate_plan(plan)
+    assert "step_2" in verdict.admitted_steps
+    assert "step_2" not in verdict.denied_steps
+
+
+def test_adapter_false_positive_scale_read_then_many_unrelated_writes():
+    """AC-ADAPT-FP: the missing guardrail from the 2026-08-29 audit.
+
+    A completely normal session — read the README, then write 5 source files
+    with no relation to it — must NOT have any write denied. Before the fix this
+    denied all 5 (false-positive avalanche). This test locks the corrected
+    behaviour so a future change cannot silently reintroduce it.
+    """
+    calls = [ToolCall(name="read_file", args={"path": "README.md"})]
+    for i in range(1, 6):
+        calls.append(
+            ToolCall(name="write_file", args={"path": f"src/module_{i}.py", "content": f"x={i}"})
+        )
+    plan = build_plan(calls, _session())
+    # Sanity: no step depends on the read (no declared chain).
+    assert all(s.depends_on == [] for s in plan.steps), plan.steps
+    verdict = evaluate_plan(plan)
+    assert verdict.denied_steps == [], f"false-positive avalanche: {verdict.denied_reasons}"
+    assert set(verdict.admitted_steps) == {s.id for s in plan.steps}

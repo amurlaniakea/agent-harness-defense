@@ -29,6 +29,18 @@ tool-calling. The version stays 0.2.0; the v0.3.0 bump lands with feature 003
   (AC-ADAPT-3 offline half), `test_session_loop` (AC-ADAPT-2 + AC-ADAPT-5),
   `test_example_cassette` (AC-ADAPT-3 end-to-end + teeth).
 
+### Fixed (audit 2026-08-29) — do NOT infer temporal dependency chains
+- `_depends_on_for()` originally chained every `tool_call` to its immediate
+  predecessor by temporal order. Because the integrity join is `min` and propagates
+  transitively through `depends_on`, ONE untrusted read anywhere in a session tainted
+  EVERY later action — `read_file(README.md)` + 5 unrelated `write_file` calls denied
+  all 5 writes (false-positive avalanche; also contradicted Constitution C1). The
+  default is now `depends_on=[]`; a step depends on something ONLY via an EXPLICIT
+  agent-supplied `content_ref`/`value_ref` (`step_<k>.content`). The realistic
+  "teeth" tests model the attacker DECLARING the dependency (the only case the IFC can
+  honestly catch). Trade-off: FALSE NEGATIVES for undeclared dependencies (documented
+  in KNOWN_ISSUES §6). New guardrail `test_adapter_false_positive_scale_*` locks this.
+
 ### Notes / honest scope
 - This is an **example adapter**, not a generic agent-integration framework
   (KNOWN_ISSUES §5). Anthropic only; OpenAI/MCP and a full autonomous loop are

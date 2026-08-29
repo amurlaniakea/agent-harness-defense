@@ -60,34 +60,45 @@ def _normalize_name(name: str) -> str:
     return name.strip().lower()
 
 
-def _depends_on_for(index: int, args: dict[str, Any], prev_id: str | None) -> list[str]:
+def _depends_on_for(index: int, args: dict[str, Any]) -> list[str]:
     """Decide ``depends_on`` for step at ``index``.
 
-    Default: chain to the previous step (temporal order). Exception: if the
-    agent returns an explicit ``content_ref`` matching ``step_<k>.content``,
-    depend on that step instead.
+    DEFAULT (C1, fail-safe against false positives): a step depends on NOTHING
+    by default. The adapter is mechanical (Spec §2) and does NOT infer
+    cross-step dependencies the agent never declared. Temporal order alone is
+    NOT a dependency — chaining every step to its predecessor would mean a
+    single untrusted read at the start of a session transitively taints every
+    later write (verified 2026-08-29: a README read + 5 unrelated writes all
+    got denied). That is a false-positive avalanche and contradicts the
+    Constitution's C1 ("NO reconstruye dependencias transversales que el agente
+    no declaró").
+
+    The ONLY way a step acquires a ``depends_on`` is an EXPLICIT reference the
+    agent returns that matches ``step_<k>.content`` (a ``content_ref`` /
+    ``value_ref``). If the agent did not declare it, the step stands alone.
+    This means the adapter can miss undeclared dependencies (a false negative) —
+    that is the honest, documented trade-off of C1/C6, and is far safer than
+    denying every normal agent session.
     """
     ref = args.get("content_ref") or args.get("value_ref") or ""
     if isinstance(ref, str):
         m = _CONTENT_REF_RE.search(ref)
         if m:
             return [f"step_{m.group(1)}"]
-    if prev_id is not None:
-        return [prev_id]
+    # NO implicit temporal chaining. Default is [] (no dependency).
     return []
 
 
 def build_plan(tool_calls: list[ToolCall], session: Any | None = None) -> Plan:
     """Translate ``tool_calls`` into a declarative ``Plan`` (Spec §2).
 
-    ``step_<n>`` ids use a per-call global index (1-based) so that chaining
-    across multiple ``AgentSession.step`` calls stays temporally ordered. The
-    index is reset per ``build_plan`` call; ``AgentSession`` is responsible for
-    carrying inter-step order if needed (the 002 adapter chains within a single
-    ``build_plan`` invocation, which matches the example's single agent turn).
+    ``step_<n>`` ids use a per-call global index (1-based). ``depends_on`` is
+    ONLY derived from an EXPLICIT ``content_ref``/``value_ref`` the agent returns
+    (mechanical, C1) — there is NO implicit temporal chaining (see
+    ``_depends_on_for``). The adapter does not infer dependencies the agent did
+    not declare; that is the honest, false-positive-free trade-off of C1/C6.
     """
     steps: list[PlanStep] = []
-    prev_id: str | None = None
     for n, tc in enumerate(tool_calls, start=1):
         step_id = f"step_{n}"
         name = _normalize_name(tc.name)
@@ -101,7 +112,7 @@ def build_plan(tool_calls: list[ToolCall], session: Any | None = None) -> Plan:
                     action="read",
                     path=path,
                     value_source=None,
-                    depends_on=_depends_on_for(n, args, prev_id),
+                    depends_on=_depends_on_for(n, args),
                 )
             )
         elif name in ("write_file", "write", "create_file"):
@@ -118,7 +129,7 @@ def build_plan(tool_calls: list[ToolCall], session: Any | None = None) -> Plan:
                     action="write",
                     path=path,
                     value_source=value_source,
-                    depends_on=_depends_on_for(n, args, prev_id),
+                    depends_on=_depends_on_for(n, args),
                 )
             )
         elif name in ("bash", "execute", "shell", "run_command"):
@@ -131,7 +142,7 @@ def build_plan(tool_calls: list[ToolCall], session: Any | None = None) -> Plan:
                     action="execute",
                     path=None,
                     value_source="repo.cmd",
-                    depends_on=_depends_on_for(n, args, prev_id),
+                    depends_on=_depends_on_for(n, args),
                 )
             )
         else:
@@ -142,9 +153,8 @@ def build_plan(tool_calls: list[ToolCall], session: Any | None = None) -> Plan:
                     action="execute",
                     path=None,
                     value_source="repo.cmd",
-                    depends_on=_depends_on_for(n, args, prev_id),
+                    depends_on=_depends_on_for(n, args),
                 )
             )
-        prev_id = step_id
 
     return Plan(mission="Anthropic tool-call translation (adapter 002).", steps=steps)

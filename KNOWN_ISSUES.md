@@ -81,3 +81,33 @@ framework. It covers the Anthropic tool-calling shape only; OpenAI/MCP and a
 full autonomous loop are separate features. The mechanical mapping is fail-closed
 for `bash`/`execute` (`value_source="repo.cmd"` → UNTRUSTED → denied) because the
 shell can move data the Plan never sees (verified in Spec 002 §2.1).
+
+## 6. Adapter does NOT infer cross-step dependencies (audited 2026-08-29)
+
+**Status:** Fixed in adapter 002 (commit on `feat/002-real-adapter`).
+Documented here so the trade-off is explicit. The same fix is included in
+`feat/003-label-persistence` via the merge of this branch.
+
+**What happened:** the original `_depends_on_for()` chained every `tool_call` to
+its immediate predecessor by temporal order (`depends_on=[prev_id]`). Because the
+integrity join is `min` and propagates transitively through `depends_on`, a SINGLE
+untrusted read anywhere in a session tainted EVERY later action regardless of real
+relation. Reproduced end-to-end: `read_file(README.md)` + 5 unrelated
+`write_file(module_N.py)` → all 5 writes denied by `integrity_violation`. Since
+almost every real agent reads a README/ docs at startup, this would have blocked
+normal work (false-positive avalanche). It also contradicted the Constitution's C1
+("NO reconstruye dependencias transversales que el agente no declaró").
+
+**Fix:** `_depends_on_for()` now returns `[]` by default. A step acquires a
+`depends_on` ONLY via an EXPLICIT agent-supplied `content_ref`/`value_ref`
+(`step_<k>.content`). Without it, the step stands alone.
+
+**Honest trade-off (C1/C6):** the adapter now has FALSE NEGATIVES for undeclared
+dependencies — if the agent reads an untrusted source and writes its content WITHOUT
+declaring the `content_ref`, the taint is NOT caught. This is the documented,
+preferable alternative to denying every normal session. The realistic "teeth" test
+(`test_adapter_plan.py::test_read_then_write_declared_dep_propagates_untrusted` and
+`examples/anthropic_incident_report`) models the attacker DECLARING the dependency,
+which is the only case the IFC can honestly catch. A new guardrail
+(`test_adapter_false_positive_scale_read_then_many_unrelated_writes`) locks the
+correct behaviour so the bug cannot silently return.
