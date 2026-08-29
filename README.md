@@ -4,6 +4,19 @@ Open admission-layer defense for LLM agent harnesses: a forbidden-path quarantin
 gated by a cross-iteration escalation monitor, evaluated offline against the public
 Signetry adversarial corpus.
 
+## Quickstart
+
+```bash
+git clone https://github.com/amurlaniakea/agent-harness-defense
+cd agent-harness-defense
+git checkout v0.3.0          # or main for the latest
+pip install -e ".[dev]"
+pytest                       # 43 tests, 4 gates clean
+```
+
+The package is not on PyPI. If you want it there, ask explicitly — don't
+assume.
+
 ## Problem
 
 LLM agents run over untrusted web pages, docs, tools and persistent state while
@@ -20,7 +33,7 @@ structural gaps in the defenses in wide use:
   separates true positives from false positives, trajectory-scoped monitors do not
   (arXiv:2608.27141).
 
-## Approach (v0.2 — IFC plan-first, dual-lattice)
+## Approach — dual-lattice IFC, plan-first
 
 `agent-harness-defense` provides an open `run_admission()` layer (the part
 `signetry-core` keeps closed). What it actually does today:
@@ -124,37 +137,33 @@ Two independent guard rails prove the eval is honest:
   seeing the test fail with `REGRESSION:` message).
 
 ```bash
-pytest            # 37 base + 5 persistence (003) = 42 tests: IFC + adapter + persistence
+pytest            # 43 tests: 23 v0.2 + 14 adapter (002) + 5 persistence (003) + 1 FP guardrail
 ahd eval          # iterate bundled scenarios (v0.1 IPI + AC-EVAL-1) against run_admission
 ahd run REPO --plan PATH   # evaluate a YAML Plan against a repo on disk
 ```
 
 ## Status
 
-v0.2.0: dual-lattice IFC propagation implemented and tested. AC-EVAL-1
-(the escalation v0.1 missed — a `write` of a SECRET to a public sink
-driven by an untrusted `read` — is caught by the IFC, see
-`test_ifc_propagation.py::test_v01_would_have_missed_this`) closes the
-gap the v0.1 heuristic could not. The v0.1 keyword/glob heuristic is
-retained as a second signal. 23 tests, all green on a clean runner
-(ruff, ruff-format, bandit -ll, pytest). Two independent external audits
-(Claude, 2026-08-28 and 2026-08-29) verified the eval is non-vacuous and
-the CI installs and tests cleanly. Remaining work: label-preserving
-persistence between iterations (v0.3, see [ROADMAP.md](ROADMAP.md)).
+**v0.3.0 (2026-08-29, current):** the IFC + a real Anthropic tool-calling adapter
+(`agent_harness_defense/adapter/`) + label-preserving persistence across
+`AgentSession` iterations. The package (`agent_harness_defense`) is version
+`0.3.0`. **43 tests** pass in a clean venv: 23 v0.2 IFC + 14 adapter (002) + 5
+persistence (003) + 1 false-positive scale guardrail that locks the no-temporal-
+chaining fix in place.
 
-Feature 002 (2026-08-29, v0.3-precursor): `agent_harness_defense/adapter/`
-ships a REAL example adapter for Anthropic tool-calling (mechanical
-`tool_call → PlanStep` mapping, fail-closed `bash`, `AgentSession` loop,
-offline cassette replay). 14 new tests cover it, including a non-vacuous
-"teeth" test (`test_example_cassette.py::test_example_is_not_vacuous_*`).
-The example is NOT a generic framework (KNOWN_ISSUES §5).
+**Two real bugs were caught and fixed in the v0.3.0 cycle** (both verified in
+clone-fresh audits, not self-reported):
+1. **bash exfiltration admitted** (Spec 002 §2.1) — original mapping left
+   `bash("echo $SECRET > report.md")` admitted. Fixed by mapping `bash` to
+   `value_source="repo.cmd"` (UNTRUSTED, fail-closed).
+2. **Temporal-chaining false-positive avalanche** (audit 2026-08-29) — the
+   adapter chained every step to its predecessor by default, so one untrusted
+   README read at the start of a session tainted every later write. Fixed by
+   requiring an explicit `content_ref` for any `depends_on` (C1 honest scope;
+   trade-off: false negatives for undeclared deps, documented in KNOWN_ISSUES §6).
 
-Feature 003 (2026-08-29, v0.3.0): label-preserving persistence. A tainted
-artifact's IFC `Label` (not its content) persists across `AgentSession`
-iterations via `persisted_labels`, so the planner cannot be re-fed a tainted
-source as clean. 5 new tests (`test_persistence.py`, AC-PERS-1..5) prove the
-2-iteration scenario flips the iter-2 write from admitted → denied. Version
-bumped to 0.3.0. (PR #4.)
+For what the project does NOT claim, see [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
+For release-by-release history, see [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
