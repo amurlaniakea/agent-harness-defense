@@ -308,17 +308,14 @@ def test_read_propagates_untrusted_via_depends_on():
     write_label = verdict.taint_summary.get("agent_output.md")
     assert write_label is not None, "write label missing from taint_summary"
     assert write_label.integrity == INTEGRITY_UNTRUSTED, (
-        f"write depending on untrusted read must propagate UNTRUSTED, "
-        f"got {write_label}"
+        f"write depending on untrusted read must propagate UNTRUSTED, got {write_label}"
     )
     assert write_label.confidentiality == CONFIDENTIALITY_INTERNAL
 
     # And the IFC must deny the write on integrity grounds.
     assert "step_2" in verdict.denied_steps, (
-        f"write of UNTRUSTED content must be denied; "
-        f"denied_steps={verdict.denied_steps}"
+        f"write of UNTRUSTED content must be denied; denied_steps={verdict.denied_steps}"
     )
     assert "integrity_violation" in verdict.denied_reasons.get("step_2", []), (
-        f"denial reason must be integrity_violation; "
-        f"got {verdict.denied_reasons.get('step_2')}"
+        f"denial reason must be integrity_violation; got {verdict.denied_reasons.get('step_2')}"
     )

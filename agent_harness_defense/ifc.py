@@ -303,7 +303,7 @@ def _classify_read_path(path: str | None) -> SourceTag:
         return SourceTag.USER
     # Tool output staging. UNTRUSTED integrity because tool output can
     # contain attacker-controlled content.
-    if path.startswith("/tmp/"):
+    if path.startswith("/tmp/"):  # nosec B108 — string classification only, no filesystem access
         return SourceTag.TOOL_RESULT
     # Default: relative path or bare filename inside the repo. This is
     # the prompt-injection surface — UNTRUSTED in integrity.
