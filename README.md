@@ -58,6 +58,26 @@ The v0.1 keyword heuristic (`ESCALATION_TRIGGERS`) is NOT the decision —
 it is a second signal. The claim matches the code: the IFC is a real
 dual-lattice engine, not a substring matcher.
 
+## Adapter example (feature 002 — Anthropic tool-calling)
+
+`agent_harness_defense/adapter/` is a minimal but REAL example that connects the
+IFC to the Anthropic tool-calling API, so a caller can copy it instead of hand-writing
+a `Plan`. It lives in `examples/anthropic_incident_report/`:
+
+- `tool_map.build_plan` — mechanical `tool_call → PlanStep` mapping (Spec 002 §2).
+  `bash`/`execute` map to `value_source="repo.cmd"` (UNTRUSTED) so shell-borne
+  exfiltration is **denied by default** (fail-closed; verified in §2.1).
+- `session.AgentSession` — drives multiple `run_admission` calls, reusing the
+  `LoopStateMonitor` across iterations, with a `pre_evaluate` hook reserved for
+  feature 003.
+- `cassette.CassettePlayer` — replays frozen API responses offline; the real call
+  only runs under `AHD_RECORD=1` + `ANTHROPIC_API_KEY`, so CI never hits the network
+  or needs credentials.
+
+This is an **example adapter**, not a generic integration framework (see
+[KNOWN_ISSUES.md](KNOWN_ISSUES.md) §5). Feature 003 (label-preserving persistence)
+builds on `AgentSession` and bumps the version to v0.3.0.
+
 ## Evaluation (offline, deterministic, NON-vacuous)
 
 The public Signetry adversarial suite (`Signetry/eval`) is the attack source. We
@@ -83,8 +103,7 @@ Two independent guard rails prove the eval is honest:
   seeing the test fail with `REGRESSION:` message).
 
 ```bash
-pytest            # 23 tests: 7 v0.2 IFC (lattice+propagation+false-pos) + 3 conftest-plan
-                  #        + 7 v0.1-adapted (3 IPI + 2 monitor + 1 regression + 1 loop-state)
+pytest            # 23 v0.2 + 14 v0.2-adapter (002) tests: IFC + example end-to-end
 ahd eval          # iterate bundled scenarios (v0.1 IPI + AC-EVAL-1) against run_admission
 ahd run REPO --plan PATH   # evaluate a YAML Plan against a repo on disk
 ```
@@ -101,6 +120,13 @@ retained as a second signal. 23 tests, all green on a clean runner
 (Claude, 2026-08-28 and 2026-08-29) verified the eval is non-vacuous and
 the CI installs and tests cleanly. Remaining work: label-preserving
 persistence between iterations (v0.3, see [ROADMAP.md](ROADMAP.md)).
+
+Feature 002 (2026-08-29, v0.3-precursor): `agent_harness_defense/adapter/`
+ships a REAL example adapter for Anthropic tool-calling (mechanical
+`tool_call → PlanStep` mapping, fail-closed `bash`, `AgentSession` loop,
+offline cassette replay). 14 new tests cover it, including a non-vacuous
+"teeth" test (`test_example_cassette.py::test_example_is_not_vacuous_*`).
+The example is NOT a generic framework (KNOWN_ISSUES §5).
 
 ## License
 
