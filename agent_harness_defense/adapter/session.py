@@ -26,10 +26,11 @@ Plan from the agent's tool-calls, runs it through the IFC, and records the
 verdict. The ``LoopStateMonitor`` is reused across steps so the cross-iteration
 signal accumulates for real (v0.2 evaluated each call independently).
 
-The ``pre_evaluate`` hook is reserved for feature 003 (label-preserving
-persistence / v0.3): 003 will inject persisted labels into the Plan before
-``evaluate_plan`` runs. In 002 it is a no-op so 003 can hang off it without
-rewriting this module.
+Feature 003 (label-preserving persistence / v0.3): after every ``step`` the
+session records any tainted artifact in ``persisted_artifacts`` and re-injects
+those labels into the next ``step`` via ``persisted_labels``. The artifact
+*content* is never stored — only its IFC ``Label`` plus a content-free hash
+``summary`` (Spec 003 §2, C1 honest scope).
 """
 
 from __future__ import annotations
@@ -40,30 +41,53 @@ from pathlib import Path
 from agent_harness_defense.admission import LoopStateMonitor, run_admission
 from agent_harness_defense.ifc import Plan, PlanVerdict
 
+from .persistence import PersistedArtifact, persisted_labels_from, record_taint
 from .tool_map import ToolCall, build_plan
 
 
 @dataclass
 class AgentSession:
-    """Stateful wrapper that keeps a monitor alive across agent iterations."""
+    """Stateful wrapper that keeps monitor + persisted labels across iterations."""
 
     label: str
     monitor: LoopStateMonitor = field(default_factory=LoopStateMonitor)
     verdicts: list[PlanVerdict] = field(default_factory=list)
+    # Feature 003: tainted artifacts remembered across iterations. Only the IFC
+    # Label is stored (never the artifact content); see persistence.py.
+    persisted_artifacts: list[PersistedArtifact] = field(default_factory=list)
 
     def pre_evaluate(self, plan: Plan) -> Plan:
-        """Hook for feature 003 (label-preserving persistence).
+        """Hook reserved for callers wanting to transform the Plan pre-evaluation.
 
-        In 002 this is a no-op: the Plan is returned unchanged. 003 will
-        mutate/annotate ``plan`` with persisted labels before evaluation,
-        without any change to ``step``'s call structure.
+        Feature 003 does NOT need it for label injection (that goes through
+        ``persisted_labels`` in ``step``), but the hook stays available so a
+        caller can add plan-level transforms without rewriting this module.
         """
         return plan
 
     def step(self, tool_calls: list[ToolCall], repo: Path) -> PlanVerdict:
-        """Translate ``tool_calls`` to a Plan, evaluate it, record the verdict."""
+        """Translate ``tool_calls`` to a Plan, evaluate it, record the verdict.
+
+        The persisted labels from previous iterations are re-injected so a taint
+        remembered in iteration N survives into iteration N+1 (Spec 003 §4).
+        """
         plan = build_plan(tool_calls, session=self)
         plan = self.pre_evaluate(plan)
-        verdict = run_admission(Path(repo), self.label, plan, loop_monitor=self.monitor)
+        iteration = len(self.verdicts) + 1
+        verdict = run_admission(
+            Path(repo),
+            self.label,
+            plan,
+            loop_monitor=self.monitor,
+            persisted_labels=persisted_labels_from(self),
+        )
         self.verdicts.append(verdict)
+        # Remember any tainted artifact for future iterations (idempotent per path).
+        record_taint(
+            self,
+            verdict.tainted_paths,
+            verdict.taint_summary,
+            verdict.denied_reasons,
+            iteration,
+        )
         return verdict

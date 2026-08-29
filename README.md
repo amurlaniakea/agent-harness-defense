@@ -78,6 +78,27 @@ This is an **example adapter**, not a generic integration framework (see
 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) §5). Feature 003 (label-preserving persistence)
 builds on `AgentSession` and bumps the version to v0.3.0.
 
+## Label-preserving persistence (feature 003 — v0.3.0)
+
+Feature 003 closes the loop the v0.1 cross-iteration monitor could not: when the IFC
+flags an artifact as tainted (UNTRUSTED integrity) in iteration N, that **label** —
+not the artifact's content — persists into iteration N+1, so the planner cannot be
+re-fed a tainted source as if it were clean (arXiv:2608.27234 §label-preserving).
+
+- `adapter/persistence.PersistedArtifact` stores only the IFC `Label` plus a
+  content-free hash `summary` (`sha256(path + reason)[:16]`). The artifact text is
+  never stored or re-exposed.
+- `AgentSession` records a `PersistedArtifact` for every tainted path after each
+  `step`, and re-injects those labels into the next iteration via
+  `run_admission(persisted_labels=...)`. Because the integrity join is `min`, a
+  persisted UNTRUSTED label sinks the step and propagates downstream through
+  `depends_on`.
+- `evaluate_plan` / `run_admission` take an optional `persisted_labels` (default
+  `None` → identical to v0.2, so the 23 v0.2 + 14 adapter tests stay green).
+- 5 new tests (`test_persistence.py`, AC-PERS-1..5) prove the improvement is real:
+  a 2-iteration scenario flips the iter-2 write from **admitted** (no persistence)
+  to **denied** (with persistence). Declassification is explicitly out of scope.
+
 ## Evaluation (offline, deterministic, NON-vacuous)
 
 The public Signetry adversarial suite (`Signetry/eval`) is the attack source. We
@@ -103,7 +124,7 @@ Two independent guard rails prove the eval is honest:
   seeing the test fail with `REGRESSION:` message).
 
 ```bash
-pytest            # 23 v0.2 + 14 v0.2-adapter (002) tests: IFC + example end-to-end
+pytest            # 37 base + 5 persistence (003) = 42 tests: IFC + adapter + persistence
 ahd eval          # iterate bundled scenarios (v0.1 IPI + AC-EVAL-1) against run_admission
 ahd run REPO --plan PATH   # evaluate a YAML Plan against a repo on disk
 ```
@@ -127,6 +148,13 @@ ships a REAL example adapter for Anthropic tool-calling (mechanical
 offline cassette replay). 14 new tests cover it, including a non-vacuous
 "teeth" test (`test_example_cassette.py::test_example_is_not_vacuous_*`).
 The example is NOT a generic framework (KNOWN_ISSUES §5).
+
+Feature 003 (2026-08-29, v0.3.0): label-preserving persistence. A tainted
+artifact's IFC `Label` (not its content) persists across `AgentSession`
+iterations via `persisted_labels`, so the planner cannot be re-fed a tainted
+source as clean. 5 new tests (`test_persistence.py`, AC-PERS-1..5) prove the
+2-iteration scenario flips the iter-2 write from admitted → denied. Version
+bumped to 0.3.0. (PR #4.)
 
 ## License
 

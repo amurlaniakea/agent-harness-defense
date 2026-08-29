@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-harness-defense"
-version = "0.2.0"
-description = "Open admission-layer defense for LLM agent harnesses: dual-lattice IFC (information-flow control) with plan-first declaration, evaluated against the Signetry adversarial corpus."
+version = "0.3.0"
+description = "Open admission-layer defense for LLM agent harnesses: dual-lattice IFC (information-flow control) with plan-first declaration and label-preserving persistence across agent iterations, evaluated against the Signetry adversarial corpus."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "AGPL-3.0-or-later" }
