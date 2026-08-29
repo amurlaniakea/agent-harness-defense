@@ -31,10 +31,12 @@ alcanza el umbral; correlacionadas, el LoopStateMonitor las separa (signal >= 1.
 
 from __future__ import annotations
 
+import shutil
 import tempfile
 from pathlib import Path
 
 from agent_harness_defense.admission import LoopStateMonitor, run_admission
+from agent_harness_defense.ifc import Plan, PlanStep
 
 
 def _make_repo_with_readme(text: str) -> Path:
@@ -56,10 +58,13 @@ def test_cross_iteration_correlates_fragmented_evidence():
     for _i, frag in enumerate(fragments):
         work = _make_repo_with_readme(frag)
         try:
-            run_admission(work, "acme/app", "mission", loop_monitor=monitor)
+            run_admission(
+                work,
+                "acme/app",
+                Plan(mission="mission", steps=[PlanStep(id="r1", action="read", path="README.md")]),
+                loop_monitor=monitor,
+            )
         finally:
-            import shutil
-
             shutil.rmtree(work.parent, ignore_errors=True)
         per_iter_scores.append(monitor.signals[-1]["score"] if monitor.signals else 0.0)
 
