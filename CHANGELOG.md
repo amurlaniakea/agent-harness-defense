@@ -4,6 +4,62 @@ All notable changes to `agent-harness-defense` are documented here. The format
 is loosely based on [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] — 2026-08-29
+
+### Breaking changes
+- `run_admission` now requires a `Plan` (declarative) as its third argument;
+  the v0.1 `proposed_files` parameter is removed. The `mission` string is now
+  part of the `Plan`. Migration:
+  ```python
+  # v0.1
+  run_admission(repo, label, "mission text", proposed_files=[...])
+  # v0.2
+  run_admission(repo, label, Plan(mission="mission text", steps=[...]))
+  ```
+- `ahd run PATH` is now `ahd run REPO --plan PATH` (YAML `Plan`). The plan is
+  the unit of admission, not the on-disk materialized state.
+
+### Added
+- Dual-lattice IFC (confidentiality + integrity) per arXiv:2608.27234 (SPA,
+  Girrens & Wang). `SourceTag`, `Label` (componentwise join: confidentiality
+  = max, integrity = min so "taint does not wash"), `PlanStep`, `Plan`,
+  `PlanVerdict`, `evaluate_plan`, `plan_from_yaml` in
+  `agent_harness_defense.ifc`.
+- Propagation by `depends_on` (control-flow) and `value_source` (data-flow):
+  a `write` driven by an UNTRUSTED `read` inherits UNTRUSTED integrity and is
+  denied (no-upgrade); a SECRET value written to a public sink is denied
+  (no-downgrade). Both axes reported separately.
+- Reads classified by path (`_classify_read_path`): repo text → UNTRUSTED,
+  system paths → SYSTEM. Pure, no filesystem access.
+- `INCIDENT_REPORT_INJECTION` scenario (AC-EVAL-1) + `assert_plan_matches_
+  materialized` guard against Plan↔materialized drift.
+- 23 tests (was 6 v0.1): 7 v0.2 IFC (3 lattice + 4 propagation) + 3 conftest
+  + 2 false-positive guards + 7 v0.1-adapted (3 IPI + 2 monitor + 1 regression
+  + 1 loop-state). The v0.1 regression guard now monkey-patches
+  `evaluate_plan` to prove the eval is non-vacuous.
+
+### Changed
+- The v0.1 keyword heuristic (`ESCALATION_TRIGGERS` + `LoopStateMonitor`) is
+  now a SECOND signal (`flagged_by_keyword` / `cross_iteration_signal`), not
+  the admission decision. The IFC verdict is authoritative.
+- `InstructionLevel` and `_level_of_file` removed (superseded by the
+  dual-lattice in `ifc.py`).
+
+### Closed limitations (see KNOWN_ISSUES.md §1)
+- AC-IFC-1 (lattice enforcement, both axes)
+- AC-IFC-2 (data-flow propagation)
+- AC-IFC-3 (control-flow propagation, both axes)
+- AC-IFC-4 (false-positive guards)
+- AC-IFC-5 (no-regression: v0.1 scenarios adapted, teeth guard added)
+- AC-IFC-6 (eval is not vacuous: v0.1 missed AC-EVAL-1, v0.2 catches)
+- AC-IFC-7 (offline, <1s/test)
+
+### Remaining (v0.3, see ROADMAP.md)
+- Label-preserving persistence between iterations (arXiv:2608.27234
+  §label-preserving).
+- AgentDojo / AgentDojo-MQ benchmark wiring.
+- The 6 real coding-agent harnesses from arXiv:2608.27299.
+
 ## [Unreleased] — v0.1.0 (2026-08-28)
 
 First public release. Open admission-layer defense for LLM agent harnesses.
