@@ -239,3 +239,86 @@ def test_source_label_of_has_unique_source_tags():
     assert SourceTag(4) is SourceTag.USER
     assert SourceTag(0) is SourceTag.DATA
     assert SourceTag(5) is SourceTag.SYSTEM
+
+
+def test_read_propagates_untrusted_via_depends_on():
+    """AC-IFC-2 propagation test (added 2026-08-29 after Claude audit).
+
+    Regression guard for a bug found by Claude while reproducing T003/T006:
+    the previous `_step_initial_label` returned Label(PUBLIC, SYSTEM) for ANY
+    `read` step, regardless of `step.path`. The 6 tests above passed only
+    because every write step's `value_source` started with "repo." or "env."
+    and was being classified by `_resolve_source` — the dependency graph
+    was never exercised.
+
+    This test deliberately avoids the magic prefixes. It builds a plan where:
+
+      step_1  read   README.md                   (relative path, no prefix)
+      step_2  write  agent_output.md  depends_on=[step_1]
+
+    The `value_source` of step_2 is "literal" (the no-op default), so the
+    ONLY way the write can become UNTRUSTED is by inheriting through
+    `depends_on` from step_1. If `_step_initial_label` ever regresses to
+    returning (PUBLIC, SYSTEM) for reads, the write would be admitted and
+    the test would fail.
+
+    Without the fix:
+      read  -> (PUBLIC, SYSTEM)
+      write -> (INTERNAL, USER)   via DATA default
+      denied_reasons == {}        (no propagation)
+
+    With the fix:
+      read  -> (PUBLIC, UNTRUSTED)        (REPO_TEXT default for relative path)
+      write -> (INTERNAL, UNTRUSTED)      (joined through depends_on)
+      denied_reasons == {"step_2": ["integrity_violation"]}
+    """
+    from agent_harness_defense.ifc import (
+        CONFIDENTIALITY_INTERNAL,
+        CONFIDENTIALITY_PUBLIC,
+        INTEGRITY_UNTRUSTED,
+        Plan,
+        PlanStep,
+        evaluate_plan,
+    )
+
+    plan = Plan(
+        mission="untrusted-read propagates to dependent write",
+        steps=[
+            PlanStep(id="step_1", action="read", path="README.md"),
+            PlanStep(
+                id="step_2",
+                action="write",
+                path="agent_output.md",
+                value_source="literal",  # no magic prefix
+                depends_on=["step_1"],
+            ),
+        ],
+    )
+    verdict = evaluate_plan(plan)
+
+    # The read must produce an UNTRUSTED label (REPO_TEXT default).
+    read_label = verdict.taint_summary.get("README.md")
+    assert read_label is not None, "read label missing from taint_summary"
+    assert read_label.confidentiality == CONFIDENTIALITY_PUBLIC
+    assert read_label.integrity == INTEGRITY_UNTRUSTED, (
+        f"read of README.md should be UNTRUSTED in integrity, got {read_label}"
+    )
+
+    # The write must inherit UNTRUSTED through depends_on.
+    write_label = verdict.taint_summary.get("agent_output.md")
+    assert write_label is not None, "write label missing from taint_summary"
+    assert write_label.integrity == INTEGRITY_UNTRUSTED, (
+        f"write depending on untrusted read must propagate UNTRUSTED, "
+        f"got {write_label}"
+    )
+    assert write_label.confidentiality == CONFIDENTIALITY_INTERNAL
+
+    # And the IFC must deny the write on integrity grounds.
+    assert "step_2" in verdict.denied_steps, (
+        f"write of UNTRUSTED content must be denied; "
+        f"denied_steps={verdict.denied_steps}"
+    )
+    assert "integrity_violation" in verdict.denied_reasons.get("step_2", []), (
+        f"denial reason must be integrity_violation; "
+        f"got {verdict.denied_reasons.get('step_2')}"
+    )

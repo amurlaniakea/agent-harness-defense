@@ -264,14 +264,65 @@ def _resolve_source(token: str | None) -> SourceTag:
     return SourceTag.DATA
 
 
+def _classify_read_path(path: str | None) -> SourceTag:
+    """Classify a `read` step's target path into a SourceTag.
+
+    evaluate_plan is pure (no filesystem access), so the classification is
+    static and based on path conventions only. The default for any path
+    we cannot classify cleanly is REPO_TEXT — the conservative choice for
+    v0.2, because "reading a file from the repo" is exactly the prompt-
+    injection surface AC-IFC-2 is built to catch. Biasing toward UNTRUSTED
+    means a `write` that depends on a `read` of an unrecognized path will
+    propagate UNTRUSTED, which is the safer direction.
+
+    Recognised conventions (no I/O):
+
+    - Absolute system paths (``/etc/...``, ``/proc/...``, ``/sys/...``,
+      ``/dev/...``)         -> SourceTag.SYSTEM
+    - Absolute user paths (``/home/...``, ``~/...``, ``~/.config/...``,
+      ``$HOME/...``)        -> SourceTag.USER
+    - Tool output paths (``/tmp/...``) -> SourceTag.TOOL_RESULT
+    - Environment-var paths (``env:VAR``) -> SourceTag.ENV
+    - Anything else (relative paths, bare filenames like ``README.md``,
+      etc.)                -> SourceTag.REPO_TEXT
+    """
+    if path is None or path == "":
+        # No path declared — treat as repo text (conservative).
+        return SourceTag.REPO_TEXT
+    # Env-var indirection, e.g. "env:SECRET_FILE" — the read pulls
+    # content through an env indirection, so the result carries the
+    # ENV tag (SECRET in confidentiality, UNTRUSTED in integrity).
+    if path.startswith("env:") or path.startswith("env."):
+        return SourceTag.ENV
+    # Absolute system paths. SYSTEM integrity (fully trusted) on read is
+    # correct: kernel-reported state is not an injection vector.
+    if path.startswith(("/etc/", "/proc/", "/sys/", "/dev/")):
+        return SourceTag.SYSTEM
+    # Absolute user-owned paths. USER integrity matches the v0.1 model.
+    if path.startswith(("/home/", "~/", "$HOME/")) or path == "~":
+        return SourceTag.USER
+    # Tool output staging. UNTRUSTED integrity because tool output can
+    # contain attacker-controlled content.
+    if path.startswith("/tmp/"):
+        return SourceTag.TOOL_RESULT
+    # Default: relative path or bare filename inside the repo. This is
+    # the prompt-injection surface — UNTRUSTED in integrity.
+    return SourceTag.REPO_TEXT
+
+
 def _step_initial_label(step: PlanStep) -> Label:
     """Initial label of a step, before joining with dependencies.
 
-    `read` steps start clean (PUBLIC, SYSTEM) — reading never taints.
+    `read` steps take the label of their target path (classified by
+    ``_classify_read_path``). A read of repo text produces an UNTRUSTED
+    integrity label, so a `write` that `depends_on` such a read inherits
+    UNTRUSTED through the dependency join — which is the entire point
+    of AC-IFC-2 (taint propagation via depends_on).
+
     `write`/`execute` steps take the label of their value_source.
     """
     if step.action == "read":
-        return Label(CONFIDENTIALITY_PUBLIC, INTEGRITY_SYSTEM)
+        return Label.label_of(_classify_read_path(step.path))
     return Label.label_of(_resolve_source(step.value_source))
 
 
