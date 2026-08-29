@@ -335,6 +335,7 @@ def evaluate_plan(
     plan: Plan,
     forbidden_paths: list[str] | None = None,
     public_sinks: frozenset[str] | None = None,
+    persisted_labels: dict[str, Label] | None = None,
 ) -> PlanVerdict:
     """Evaluate a Plan and return a `PlanVerdict`.
 
@@ -357,8 +358,12 @@ def evaluate_plan(
     4. Record admitted/denied steps, taint_summary (path -> final label),
        and receipt.
 
-    The IFC reports BOTH axes of the dual-lattice separately; see AC-IFC-1
-    test 3 in the spec.
+    `persisted_labels` (feature 003): an optional `{path: Label}` map of taints
+    remembered from previous iterations. If a step's `path` is in this map, its
+    initial label is joined with the persisted label BEFORE the depends_on join.
+    Because the integrity join is `min`, a persisted UNTRUSTED label sinks the
+    step's integrity and propagates to downstream steps via `depends_on`. Passing
+    `None` (default) keeps v0.2 behaviour exactly (backward-compatible; AC-PERS-5).
     """
     if not isinstance(plan, Plan):  # type: ignore[unidiomatic-typecheck]
         raise PlanRequiredError(
@@ -379,6 +384,10 @@ def evaluate_plan(
     # Pass 1: compute effective labels and apply per-step rules.
     for step in plan.steps:
         eff = _step_initial_label(step)
+        # Feature 003: re-inject a taint remembered from a previous iteration.
+        # Joined BEFORE the depends_on join so it propagates downstream.
+        if persisted_labels and step.path and step.path in persisted_labels:
+            eff = eff.join(persisted_labels[step.path])
         for dep_id in step.depends_on:
             if dep_id in step_label:
                 eff = eff.join(step_label[dep_id])

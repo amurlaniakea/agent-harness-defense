@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_harness_defense.ifc import (
+    Label,
     Plan,
     PlanVerdict,
     evaluate_plan,
@@ -191,6 +192,7 @@ def run_admission(
     plan: Plan,
     *,
     loop_monitor: LoopStateMonitor | None = None,
+    persisted_labels: dict[str, Label] | None = None,
 ) -> PlanVerdict:
     """Evaluate a `Plan` against the dual-lattice IFC and the repo contract.
 
@@ -209,7 +211,11 @@ def run_admission(
     )
 
     # 1) Primary decision: dual-lattice IFC over the Plan.
-    verdict = evaluate_plan(plan, forbidden_paths=contract.forbidden_paths)
+    verdict = evaluate_plan(
+        plan,
+        forbidden_paths=contract.forbidden_paths,
+        persisted_labels=persisted_labels,
+    )
 
     # 2) Second signal (v0.1 retention): scan ALL untrusted repo text for
     #    trigger phrases. The v0.1 keyword match is not the decision; it
