@@ -3,26 +3,31 @@
 This is the direction the project is heading, not a list of promises. Each
 item links back to the research / audit that motivates it.
 
-## Near term: from v0.1 heuristic to a real IFC engine
+## CLOSED: from v0.1 heuristic to a real IFC engine (v0.2.0, 2026-08-29)
 
-The current admission layer is a keyword/glob engine (see `KNOWN_ISSUES.md`
-§1). The v0.2 target is full **information-flow control** as described in
+The admission layer WAS a keyword/glob engine (see `KNOWN_ISSUES.md` §1).
+v0.2.0 shipped full **information-flow control** as described in
 arXiv:2608.27234 (SPA: Securing Persistent LLM Agents Across Queries with
 Plan-First Information-Flow Control):
 
-- Track per-fragment instruction levels across data and control dependencies.
-- A planner emits a declarative plan once per query; the runtime applies a
-  dual-lattice IFC (confidentiality + integrity) over explicit data flows and
-  control dependencies. Low-privilege content elevated to a high-privilege
-  command is denied.
-- Persist untrusted payloads in a quarantine so they are not re-exposed to the
-  planner on later iterations.
+- Per-fragment source tags (SYSTEM/USER/TOOL_RESULT/REPO_TEXT/ENV/DATA) over
+  data and control dependencies, via an explicit declarative `Plan`.
+- A planner emits a `Plan` once per query; `evaluate_plan` applies a
+  dual-lattice IFC (confidentiality = max, integrity = min) over the
+  `depends_on` graph. Low-privilege content elevated to a high-privilege
+  command is denied (no-upgrade). SECRET→public-sink is denied (no-downgrade).
+- The v0.1 heuristic is retained as a SECOND signal (`flagged_by_keyword` /
+  `cross_iteration_signal`), not the decision.
 
-The v0.1 work that this roadmap builds on:
-- Forbidden-path quarantine (v0.1) becomes one **projection** of the
-  dual-lattice decision rather than the whole defense.
-- The cross-iteration monitor (v0.1, arXiv:2608.27141) becomes a consumer of
-  IFC verdicts across iterations instead of a substring accumulator.
+## v0.3 (post-v0.2) — remaining work
+
+- **Label-preserving persistence between iterations** (arXiv:2608.27234
+  §label-preserving): carry IFC labels from iteration N into the planner
+  context in iteration N+1, instead of recomputing per call. Closes the
+  loop the v0.1 cross-iteration *signal* monitor could not.
+- **AgentDojo / AgentDojo-MQ benchmark**: evaluate against the standard
+  agent-security benchmark, not just the re-modeled Signetry IPI corpus.
+- **Wiring the 6 real harnesses from arXiv:2608.27299** (see below).
 
 ## Wiring the 6 real harnesses from arXiv:2608.27299
 

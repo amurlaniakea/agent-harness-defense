@@ -20,34 +20,43 @@ structural gaps in the defenses in wide use:
   separates true positives from false positives, trajectory-scoped monitors do not
   (arXiv:2608.27141).
 
-## Approach (v0.1 — honest scope)
+## Approach (v0.2 — IFC plan-first, dual-lattice)
 
 `agent-harness-defense` provides an open `run_admission()` layer (the part
 `signetry-core` keeps closed). What it actually does today:
 
-1. **Taint labeling** — every file the agent reads from the repo is labeled
-   LOW-privilege (`InstructionLevel.REPO_TEXT`, i.e. untrusted data, not
-   instructions). This label is used for provenance of the escalation decision.
-   NOTE: full label *propagation* across arbitrary data/control flows is NOT
-   implemented yet — it is the SPA direction (arXiv:2608.27234), future work
-   (see [KNOWN_ISSUES.md](KNOWN_ISSUES.md) §1 and [ROADMAP.md](ROADMAP.md)).
-2. **Forbidden-path quarantine** — the agent's on-disk edits are scanned; any file
-   matching `forbidden_paths` in the admission contract is quarantined out of the
-   ADMITTED changeset. The quarantine is gated by a cross-iteration escalation
-   signal so a single benign-looking mention does not over-block.
-3. **Cross-iteration loop-state monitor** (arXiv:2608.27141) — retains a safety
-   signal across iterations instead of re-initializing per trajectory. The monitor
-   observes the planted input (README, CLAUDE.md, and all untrusted repo text)
-   separately from the admission decision (which uses the proposed changeset).
-   The caller must reuse the same `LoopStateMonitor` across loop iterations; the
-   CLI does not yet drive a real agent loop (KNOWN_ISSUES.md §4).
-4. **Contract / verifier** — `allowed_paths`, `forbidden_paths`, `max_files_changed`.
-5. **Receipt** — admitted change carries a hash of the base commit, the diff, and
-   the plan capability-set hash.
+1. **Dual-lattice IFC** (confidentiality + integrity) per
+   arXiv:2608.27234 (SPA). `evaluate_plan` takes a declarative `Plan` and
+   applies a componentwise lattice join over the `depends_on` graph:
+   confidentiality = max (the result is as sensitive as the most sensitive
+   operand), integrity = min ("taint does not wash" — an UNTRUSTED value
+   joined with a SYSTEM intent stays UNTRUSTED, blocking the no-upgrade
+   rule). `SourceTag` (SYSTEM/USER/TOOL_RESULT/REPO_TEXT/ENV/DATA) is the
+   per-fragment origin label.
+2. **Propagation by `depends_on`** — a `write`/`execute` step inherits the
+   label of every step it depends on. A `write` of `incident-report.md`
+   that `depends_on` a `read` of an untrusted `README.md` inherits UNTRUSTED
+   integrity and is denied (no-upgrade). A `write` sourced from `env.SECRET`
+   to a public sink is denied (no-downgrade). Both axes are reported
+   separately (AC-IFC-1/2/3).
+3. **Reads are classified by path** (`_classify_read_path`): reading
+   repo text yields UNTRUSTED integrity (the prompt-injection surface);
+   reading a system file yields SYSTEM integrity. This is pure (no I/O).
+4. **Forbidden-path quarantine** — retained from v0.1: a step whose path
+   matches `forbidden_paths` in the contract is denied. It is now one
+   projection of the dual-lattice decision, not the whole defense.
+5. **Cross-iteration loop-state monitor** (arXiv:2608.27141) — RETAINED as a
+   SECOND signal (`flagged_by_keyword` / `cross_iteration_signal`).
+   The IFC verdict is the primary decision; the monitor feeds diagnostic
+   visibility only.
+6. **Contract / verifier** — `allowed_paths`, `forbidden_paths`,
+   `max_files_changed`.
+7. **Receipt** — admitted change carries a hash of the base commit, the diff,
+   and the plan capability-set hash.
 
-The escalation decision is currently a heuristic over LOW-privilege repo text
-(5 hard-coded trigger phrases + forbidden-path matching), NOT a learned/taint
-propagation engine. That is stated plainly here so the claim matches the code.
+The v0.1 keyword heuristic (`ESCALATION_TRIGGERS`) is NOT the decision —
+it is a second signal. The claim matches the code: the IFC is a real
+dual-lattice engine, not a substring matcher.
 
 ## Evaluation (offline, deterministic, NON-vacuous)
 
@@ -74,19 +83,24 @@ Two independent guard rails prove the eval is honest:
   seeing the test fail with `REGRESSION:` message).
 
 ```bash
-pytest            # 6 tests: 2 IPI + regression + cross-iteration + monitor-signal (×2)
-ahd eval          # run the bundled scenarios against run_admission
-ahd run PATH      # admit/reject the agent's change on disk at PATH
+pytest            # 23 tests: 7 v0.2 IFC (lattice+propagation+false-pos) + 3 conftest-plan
+                  #        + 7 v0.1-adapted (3 IPI + 2 monitor + 1 regression + 1 loop-state)
+ahd eval          # iterate bundled scenarios (v0.1 IPI + AC-EVAL-1) against run_admission
+ahd run REPO --plan PATH   # evaluate a YAML Plan against a repo on disk
 ```
 
 ## Status
 
-v0.1 MVP. The defense exercises three of the five components end-to-end against
-the real IPI corpus; components #1 (IFC propagation) and the live agent-loop
-wiring are roadmap work (see [KNOWN_ISSUES.md](KNOWN_ISSUES.md) and
-[ROADMAP.md](ROADMAP.md)). Two independent external audits (Claude, 2026-08-28)
-verified the eval is non-vacuous and the CI installs and tests cleanly on a
-fresh runner.
+v0.2.0: dual-lattice IFC propagation implemented and tested. AC-EVAL-1
+(the escalation v0.1 missed — a `write` of a SECRET to a public sink
+driven by an untrusted `read` — is caught by the IFC, see
+`test_ifc_propagation.py::test_v01_would_have_missed_this`) closes the
+gap the v0.1 heuristic could not. The v0.1 keyword/glob heuristic is
+retained as a second signal. 23 tests, all green on a clean runner
+(ruff, ruff-format, bandit -ll, pytest). Two independent external audits
+(Claude, 2026-08-28 and 2026-08-29) verified the eval is non-vacuous and
+the CI installs and tests cleanly. Remaining work: label-preserving
+persistence between iterations (v0.3, see [ROADMAP.md](ROADMAP.md)).
 
 ## License
 

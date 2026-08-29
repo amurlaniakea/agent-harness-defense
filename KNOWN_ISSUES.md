@@ -3,33 +3,34 @@
 This file tracks limitations and pending work that affect what the project can
 honestly claim. Each entry references the audit / paper that motivated it.
 
-## 1. Taint / information-flow propagation is NOT implemented (CRÍTICO 2, Claude audit 2026-08-28)
+## 1. Label-preserving persistence between iterations is NOT implemented (CRÍTICO 2, re-scoped 2026-08-29)
 
-**Status:** pending — see `ROADMAP.md` for the direction.
+**Status:** Implemented in v0.2.0 — see `ROADMAP.md` for the direction.
 
-**What the code does today (v0.1):**
-- `InstructionLevel` (SYSTEM/USER/TOOL_RESULT/REPO_TEXT/DATA) labels every file
-  the agent reads from the repo as LOW-privilege (`_level_of_file` returns
-  `REPO_TEXT`).
-- The label is used for **provenance** of the escalation decision (the report
-  carries `taint: dict[rel -> level]`), not for propagation.
-- The actual escalation decision is: (a) forbidden-path glob match against
-  `contract.forbidden_paths`, gated by (b) a cross-iteration escalation signal
-  (`LoopStateMonitor.accumulated_score >= 1.0`).
+**What the code does now (v0.2.0):**
+- Dual-lattice IFC (confidentiality + integrity) over an explicit
+  declarative `Plan` (`agent_harness_defense.ifc`). `SourceTag`,
+  `Label` (componentwise join: confidentiality = max, integrity = min),
+  `PlanStep`, `Plan`, `PlanVerdict`, `evaluate_plan`.
+- Label propagation across `depends_on` (control-flow) and `value_source`
+  chains (data-flow). A `write` driven by an UNTRUSTED read (repo text)
+  inherits UNTRUSTED integrity and is denied (no-upgrade). A SECRET value
+  written to a public sink is denied (no-downgrade). Both axes are reported
+  separately (AC-IFC-1/2/3).
+- The v0.1 heuristic (`ESCALATION_TRIGGERS` + `LoopStateMonitor`) is
+  RETAINED as a SECOND signal (`flagged_by_keyword` /
+  `cross_iteration_signal`), never authoritative.
 
-**What the code does NOT do yet:**
-- Label propagation across arbitrary data flows (e.g. if a tool result is
-  embedded in a later user prompt, propagate the tool-result label).
-- Label propagation across control dependencies (e.g. an `if` branch whose
-  condition depends on tainted data taints the branch).
-- A principled explanation of *why* a specific elevation was denied beyond
-  "forbidden path matched + cross-iteration signal fired".
+**What the code does NOT do yet (stage 1 of the plan):**
+- Label-preserving persistence between iterations — once the IFC flags a
+  payload in iteration N, that label is not carried into the planner's
+  context in iteration N+1 (arXiv:2608.27234 §label-preserving). The
+  monitor retains cross-iteration *signal*, but the *IFC label* is
+  recomputed per call. This is the remaining v0.3 item.
 
-**Why it is honest to call this v0.1:**
-- The README's "Approach" section now states the heuristic explicitly
-  (keyword + glob matching, no propagation). It does not claim IFC propagation.
-- The roadmap (see `ROADMAP.md`) sketches the propagation work needed to call
-  this an IFC engine rather than a v0.1 heuristic.
+**Why it is honest to call this v0.2:** the README's "Approach" section
+now states the dual-lattice IFC explicitly. The roadmap (see `ROADMAP.md`)
+sketches the persistence work needed to close the loop fully.
 
 ## 2. `llm-guard` is an optional detection signal, not a runtime dep (MENOR 1)
 

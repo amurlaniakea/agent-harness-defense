@@ -4,11 +4,6 @@
 #
 # Copyright (C) 2026 Pedro Sordo Martínez
 #
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -18,12 +13,14 @@
 # License along with this program.  If not, see
 # <https://www.gnu.org/licenses/>.
 
-"""Regression guard: prove the IPI eval is NOT vacuous.
+"""Regression guard: prove the IPI eval is NOT vacuous (adapted to v0.2, T012).
 
 If the admission layer stopped quarantining forbidden artifacts (e.g. a future
 change that admits everything), the eval criterion must FAIL. We simulate that
-regression with `_fake_admit_everything` (a broken defense) and assert the criterion
-flags it: attack_in_admitted True and trust_boundary_clean False.
+regression by monkey-patching `evaluate_plan` to return a verdict that admits
+every step (a broken IFC), and assert the criterion flags it: the attack step
+ends up in `admitted_steps` (not `denied_steps`) and `cross_iteration_signal`
+is still available for the monitor second-signal.
 """
 
 from __future__ import annotations
@@ -33,11 +30,13 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from agent_harness_defense.admission import AdmissionReport, LoopStateMonitor, run_admission
+import agent_harness_defense.admission as _adm
+from agent_harness_defense.admission import run_admission
+from agent_harness_defense.ifc import PlanVerdict, evaluate_plan
 from tests.conftest import README_INJECTION
 
 
-def _materialize(scn, work: Path) -> list[str]:
+def _materialize(scn, work: Path) -> tuple[list[str], list[str]]:
     for rel, content in scn.repo_files.items():
         p = work / rel
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -49,29 +48,24 @@ def _materialize(scn, work: Path) -> list[str]:
     subprocess.run(["git", "commit", "-qm", "base"], cwd=work, check=True)
     legit = scn.legit_edit(work)
     obeyed = scn.obey(work)
-    return sorted(set(legit) | set(obeyed) | {scn.task_marker})
+    return legit, obeyed
 
 
-def _fake_admit_everything(repo_path, label, mission, proposed_files=None, *, loop_monitor=None):
-    """Simulates a BROKEN defense that admits the attack into the changeset."""
-    real = run_admission(
-        repo_path, label, mission, proposed_files=proposed_files, loop_monitor=loop_monitor
-    )
-    admitted = sorted(set(real.changed_files) | set(real.quarantined_files))
-    return AdmissionReport(
-        changed_files=admitted,
-        escalation_detected=real.escalation_detected,
-        quarantined_files=[],
-        task_completed=real.task_completed,
-        authority_level=real.authority_level,
-        authority=real.authority,
-        outcome="REGRESSION: attack admitted",
-        contract_passed=real.contract_passed,
-        trust_boundary_clean=False,
-        receipt=real.receipt,
-        cross_iteration_signal=real.cross_iteration_signal,
-        taint=real.taint,
-    )
+def _fake_admit_everything(*args, **kwargs) -> PlanVerdict:
+    """Monkey-patched `evaluate_plan`: a BROKEN IFC that admits every step."""
+    real = evaluate_plan(*args, **kwargs)
+    # Admit everything: move all denied steps back into admitted.
+    broken = PlanVerdict()
+    broken.admitted_steps = list(real.admitted_steps) + list(real.denied_steps)
+    broken.denied_steps = []
+    broken.denied_reasons = {}
+    broken.taint_summary = dict(real.taint_summary)
+    broken.tainted_paths = []
+    broken.flagged_by_keyword = list(real.flagged_by_keyword)
+    broken.flagged_by_ifc = []
+    broken.cross_iteration_signal = real.cross_iteration_signal
+    broken.receipt = dict(real.receipt)
+    return broken
 
 
 def test_eval_detects_a_broken_defense():
@@ -80,17 +74,47 @@ def test_eval_detects_a_broken_defense():
     work = tmp / "repo"
     work.mkdir(parents=True)
     try:
-        candidates = _materialize(scn, work)
-        report = _fake_admit_everything(
-            work, "acme/app", "mission", proposed_files=candidates, loop_monitor=LoopStateMonitor()
-        )
-        admitted = set(report.changed_files)
-        attack_in_admitted = any(m in admitted for m in scn.attack_markers)
-        # The broken defense admits the artifact -> the eval criterion flags it.
+        legit, obeyed = _materialize(scn, work)
+        assert scn.plan is not None
+        # Teeth: the Plan must match what was materialized.
+        from tests.conftest import assert_plan_matches_materialized
+
+        assert_plan_matches_materialized(scn, scn.plan, legit, obeyed)
+
+        # Simulate a broken IFC that admits everything.
+        with _patch_evaluate_plan(_fake_admit_everything):
+            verdict = run_admission(work, label="acme/app", plan=scn.plan)
+
+        attack_step_ids = {
+            step.id for step in scn.plan.steps if step.path in set(scn.attack_markers)
+        }
+        # The broken defense admits the attack step -> the eval criterion
+        # must observe it as ADMITTED (not denied). This proves the
+        # criterion is non-vacuous: it would catch a regression.
+        attack_in_admitted = bool(attack_step_ids & set(verdict.admitted_steps))
         assert attack_in_admitted is True, (
             "regression guard misconfigured: attack not admitted by fake"
         )
-        assert report.trust_boundary_clean is False
-        assert report.quarantined_files == []
+        assert verdict.denied_steps == [], (
+            f"broken defense must leave denied_steps empty; got {verdict.denied_steps}"
+        )
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+# Helpers to monkey-patch admission.evaluate_plan without import gymnastics.
+class _patch_evaluate_plan:
+    """Minimal context-manager monkey-patch for admission.evaluate_plan."""
+
+    def __init__(self, replacement):
+        self.replacement = replacement
+        self.original = None
+
+    def __enter__(self):
+        self.original = _adm.evaluate_plan
+        _adm.evaluate_plan = self.replacement
+        return self
+
+    def __exit__(self, *exc):
+        _adm.evaluate_plan = self.original
+        return False

@@ -18,24 +18,25 @@
 # License along with this program.  If not, see
 # <https://www.gnu.org/licenses/>.
 
-"""Open admission layer for LLM agent harnesses.
+"""Open admission layer for LLM agent harnesses (v0.2: dual-lattice IFC).
 
 Replaces the closed `signetry-core` admission pipeline with an open, auditable
-implementation. v0.1 design (HONEST scope):
+implementation. v0.2 design:
 
-1. Taint / instruction-level labeling — every file the agent reads from the repo
-   is labeled LOW-privilege (untrusted data). We do NOT yet propagate labels across
-   arbitrary data/control flows (that is future work); we use the label to record
-   provenance of an escalation decision. The escalation decision itself is a
-   forbidden-path quarantine gated by a cross-iteration escalation signal.
-2. Cross-iteration loop-state monitor (arXiv:2608.27141) — retains a safety signal
-   across iterations instead of re-initializing per trajectory.
-3. Contract / verifier — allowed_paths / forbidden_paths / max_files_changed.
+1. Dual-lattice IFC (arXiv:2608.27234, SPA) — confidentiality and integrity,
+   propagation via the explicit `depends_on` graph of a `Plan`. The engine
+   lives in `agent_harness_defense.ifc`; this module is the integration
+   layer.
+2. Cross-iteration loop-state monitor (arXiv:2608.27141) — retained as a
+   SECONDARY signal (`flagged_by_keyword` / `cross_iteration_signal`); the
+   IFC verdict is the primary decision.
+3. Contract / verifier — `allowed_paths`, `forbidden_paths`, `max_files_changed`.
 4. Receipt — admitted change carries base-commit, diff and capability-set hashes.
 
-Deterministic and offline; no LLM calls. The "agent" is modeled by the harness that
-materializes the agent's on-disk edits (including any it produced by obeying an
-injected instruction) and then calls `run_admission` to compute the ADMITTED subset.
+Deterministic and offline; no LLM calls. The "agent" is modeled by the harness
+that materializes the agent's on-disk edits and emits a `Plan` declaring what
+it intends to do and where each value comes from; the engine then evaluates
+the plan against the dual-lattice and the contract.
 """
 
 from __future__ import annotations
@@ -44,20 +45,14 @@ import hashlib
 import re
 import subprocess
 from dataclasses import dataclass, field
-from enum import IntEnum
 from pathlib import Path
 from typing import Any
 
-
-class InstructionLevel(IntEnum):
-    """Privilege level of a content fragment (higher = more authority over behavior)."""
-
-    SYSTEM = 40
-    USER = 30
-    TOOL_RESULT = 20
-    REPO_TEXT = 10
-    DATA = 0
-
+from agent_harness_defense.ifc import (
+    Plan,
+    PlanVerdict,
+    evaluate_plan,
+)
 
 # Low-privilege repo text that, if it commands a forbidden action, is an escalation.
 # Single, non-overlapping triggers (each fragment carries at most one). Derived from
@@ -128,15 +123,6 @@ def _glob_match(pattern: str, rel: str) -> bool:
     return False
 
 
-def _level_of_file(rel: str) -> InstructionLevel:
-    """Repo text the agent reads is untrusted data, not instructions.
-
-    This is the taint label used for provenance of the escalation decision. Full
-    label propagation across data/control flows is future work (see README).
-    """
-    return InstructionLevel.REPO_TEXT
-
-
 @dataclass
 class LoopStateMonitor:
     """Cross-iteration safety state (arXiv:2608.27141).
@@ -176,47 +162,15 @@ class LoopStateMonitor:
         return self.accumulated_score >= 1.0
 
 
-@dataclass
-class AdmissionReport:
-    changed_files: list[str]
-    escalation_detected: bool
-    quarantined_files: list[str]
-    task_completed: bool
-    authority_level: int
-    authority: str
-    outcome: str
-    contract_passed: bool
-    trust_boundary_clean: bool
-    receipt: dict[str, str]
-    cross_iteration_signal: float
-    taint: dict[str, int]
-
-
-def _git(args: list[str], cwd: Path) -> str:
-    return subprocess.run(
-        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
-    ).stdout.strip()
-
-
-def _candidate_files(repo_path: Path, proposed_files: list[str] | None) -> list[str]:
-    if proposed_files is not None:
-        return list(proposed_files)
-    return [
-        str(f.relative_to(repo_path))
-        for f in repo_path.rglob("*")
-        if f.is_file() and not str(f.relative_to(repo_path)).startswith((".git", ".signetry"))
-    ]
-
-
 def _scan_targets(repo_path: Path) -> list[str]:
     """Files the cross-iteration monitor observes: ALL untrusted repo text.
 
     The monitor looks for escalation evidence in untrusted input (where the
-    attacker plants instructions), not in the agent's output artifacts. The
-    candidate changeset (proposed_files) is a separate concept and is used only
-    for the admission decision. Conflating them — as an earlier revision did —
-    let `escalation_detected` come from a coincidental substring in the agent's
-    own output rather than from the planted injection.
+    attacker plants instructions), not in the agent's output artifacts. A
+    previous v0.1 revision conflated them and the signal came from a
+    coincidental substring in the agent's own output (audit round 2). The
+    monitor and the admission decision are separate concerns and must
+    stay separate.
     """
     return [
         str(f.relative_to(repo_path))
@@ -225,24 +179,26 @@ def _scan_targets(repo_path: Path) -> list[str]:
     ]
 
 
+def _git(args: list[str], cwd: Path) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
 def run_admission(
     repo_path: Path,
     label: str,
-    mission: str,
-    proposed_files: list[str] | None = None,
+    plan: Plan,
     *,
     loop_monitor: LoopStateMonitor | None = None,
-) -> AdmissionReport:
-    """Compute the ADMITTED subset of the agent's on-disk edits.
+) -> PlanVerdict:
+    """Evaluate a `Plan` against the dual-lattice IFC and the repo contract.
 
-    The repo at ``repo_path`` already contains the agent's edits, including any
-    artifacts it produced by obeying injected repo text. We:
-
-    1. Label every file the agent *touched* (candidates) with an instruction
-       level — provenance of the escalation decision.
-    2. Scan ALL untrusted repo text (input where the injection lives, not just
-       candidates) and feed the cross-iteration monitor with that evidence.
-    3. Quarantine forbidden-path artifacts out of the admitted changeset.
+    The IFC engine (`agent_harness_defense.ifc.evaluate_plan`) is the primary
+    decision-maker. After that, the v0.1 second-signal pipeline runs:
+    `LoopStateMonitor` is fed by `_scan_targets` (ALL untrusted repo text) and
+    `flagged_by_keyword` is filled. The `flagged_by_keyword` list is a soft
+    alert, never a denial — IFC verdicts are authoritative.
     """
     repo_path = Path(repo_path)
     monitor = loop_monitor or LoopStateMonitor()
@@ -252,80 +208,38 @@ def run_admission(
         Contract.from_yaml(contract_path.read_text()) if contract_path.is_file() else Contract()
     )
 
-    candidates = _candidate_files(repo_path, proposed_files)
+    # 1) Primary decision: dual-lattice IFC over the Plan.
+    verdict = evaluate_plan(plan, forbidden_paths=contract.forbidden_paths)
 
-    # 1) Taint labeling: every candidate file carries an instruction level.
-    taint: dict[str, int] = {rel: int(_level_of_file(rel)) for rel in candidates}
-
-    # 2) Scan ALL untrusted repo text (input where the injection lives).
-    #    The monitor is a separate concern from the admission decision: it
-    #    observes the planted instruction in README/CLAUDE.md, not the agent's
-    #    output. A previous revision conflated them; that was the bug.
+    # 2) Second signal (v0.1 retention): scan ALL untrusted repo text for
+    #    trigger phrases. The v0.1 keyword match is not the decision; it
+    #    just feeds `flagged_by_keyword` for diagnostic visibility.
+    flagged_by_keyword: list[str] = []
     for rel in _scan_targets(repo_path):
         f = repo_path / rel
         try:
             text = f.read_text(errors="replace")
         except Exception:
             continue
+        before = monitor.accumulated_score
         monitor.observe(text, rel=rel)
+        after = monitor.accumulated_score
+        if after > before:
+            flagged_by_keyword.append(rel)
 
-    # 3) Forbidden-path hits (the artifacts the agent may have written by obeying).
-    forbidden_hits = [
-        c for c in candidates if any(_glob_match(fp, c) for fp in contract.forbidden_paths)
-    ]
+    verdict.flagged_by_keyword = flagged_by_keyword
+    verdict.cross_iteration_signal = monitor.accumulated_score
 
-    # 4) QUARANTINE: admitted excludes forbidden hits (admission-time defense).
-    admitted = [c for c in candidates if c not in forbidden_hits]
-
-    # Escalation detected = forbidden artifact present AND cross-iteration signal fired.
-    escalation_detected = bool(forbidden_hits) and monitor.correlated
-
-    # Benign task completion: a non-forbidden, allowed file is in the admitted set.
-    task_completed = any(
-        c in admitted
-        and (not contract.allowed_paths or any(_glob_match(a, c) for a in contract.allowed_paths))
-        for c in admitted
-    )
-
-    contract_passed = True
-    if contract.max_files_changed is not None:
-        contract_passed = len(admitted) <= contract.max_files_changed
-
+    # 3) Receipt: base commit + diff hash + capability-set hash.
     has_git = (repo_path / ".git").exists()
     base_commit = _git(["rev-parse", "HEAD"], cwd=repo_path) if has_git else "no-git"
     diff = _git(["diff", "--stat"], cwd=repo_path) if has_git else ""
     cap_set = hashlib.sha256(
         (str(sorted(contract.allowed_paths)) + str(sorted(contract.forbidden_paths))).encode()
     ).hexdigest()[:16]
-
-    # trust_boundary_clean = the attack did NOT enter the admitted changeset.
-    attack_in_admitted = any(m in admitted for m in forbidden_hits)
-    trust_boundary_clean = not attack_in_admitted
-
-    authority_level = 0 if escalation_detected else 1
-    authority = "denied" if escalation_detected else "admitted"
-    if escalation_detected and task_completed:
-        outcome = "ATTACK BOUNDED: artifact quarantined, benign task admitted"
-    elif escalation_detected:
-        outcome = "ATTACK DETECTED: artifact quarantined (benign task unclear)"
-    else:
-        outcome = "ADMITTED"
-
-    return AdmissionReport(
-        changed_files=sorted(admitted),
-        escalation_detected=escalation_detected,
-        quarantined_files=sorted(forbidden_hits),
-        task_completed=task_completed,
-        authority_level=authority_level,
-        authority=authority,
-        outcome=outcome,
-        contract_passed=contract_passed,
-        trust_boundary_clean=trust_boundary_clean,
-        receipt={
-            "base_commit": base_commit,
-            "capability_set": cap_set,
-            "diff_hash": hashlib.sha256(diff.encode()).hexdigest()[:16],
-        },
-        cross_iteration_signal=monitor.accumulated_score,
-        taint=taint,
-    )
+    verdict.receipt = {
+        "base_commit": base_commit,
+        "capability_set": cap_set,
+        "diff_hash": hashlib.sha256(diff.encode()).hexdigest()[:16],
+    }
+    return verdict
