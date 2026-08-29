@@ -94,9 +94,8 @@ shell can move data the Plan never sees (verified in Spec 002 §2.1).
 
 ## 6. Adapter does NOT infer cross-step dependencies (audited 2026-08-29)
 
-**Status:** Fixed in adapter 002 (commit on `feat/002-real-adapter`).
-Documented here so the trade-off is explicit. The same fix is included in
-`feat/003-label-persistence` via the merge of this branch.
+**Status:** Fixed in adapter 002 (commit on `feat/002-real-adapter`, also in
+`feat/003-label-persistence` via merge). Documented here so the trade-off is explicit.
 
 **What happened:** the original `_depends_on_for()` chained every `tool_call` to
 its immediate predecessor by temporal order (`depends_on=[prev_id]`). Because the

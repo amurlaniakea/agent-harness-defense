@@ -73,8 +73,8 @@ tool-calling. The version stays 0.2.0; the v0.3.0 bump lands with feature 003
   default is now `depends_on=[]`; a step depends on something ONLY via an EXPLICIT
   agent-supplied `content_ref`/`value_ref` (`step_<k>.content`). The realistic
   "teeth" tests model the attacker DECLARING the dependency (the only case the IFC can
-  honestly catch). Trade-off: FALSE NEGATIVES for undeclared dependencies (documented
-  in KNOWN_ISSUES §6). New guardrail `test_adapter_false_positive_scale_*` locks this.
+  honestly catch). Trade-off: FALSE NEGATIVES for undeclared dependencies (documented in
+  KNOWN_ISSUES §6). New guardrail `test_adapter_false_positive_scale_*` locks this.
 
 ### Notes / honest scope
 - This is an **example adapter**, not a generic agent-integration framework
