@@ -209,6 +209,11 @@ class PlanVerdict:
     denied_steps: list[str] = field(default_factory=list)
     denied_reasons: dict[str, list[str]] = field(default_factory=dict)
     taint_summary: dict[str, Label] = field(default_factory=dict)
+    # Paths whose final label has UNTRUSTED integrity — i.e. the IFC
+    # determined their value is tainted by a low-integrity source. Derived
+    # from taint_summary; exposed for diagnostic visibility and for tests
+    # that assert the propagation result by path (AC-IFC-2/3).
+    tainted_paths: list[str] = field(default_factory=list)
     flagged_by_keyword: list[str] = field(default_factory=list)
     flagged_by_ifc: list[str] = field(default_factory=list)
     cross_iteration_signal: float = 0.0
@@ -430,6 +435,14 @@ def evaluate_plan(
     verdict.denied_reasons = {sid: rs for sid, rs in reasons.items() if rs}
     # Flag denied paths as "flagged_by_ifc" for diagnostic visibility.
     verdict.flagged_by_ifc = list(verdict.denied_steps)
+    # Derive tainted_paths: every path whose final label is UNTRUSTED in
+    # integrity. This is the IFC's view of "this output is tainted by a
+    # low-integrity (attacker-controlled) source".
+    verdict.tainted_paths = [
+        path
+        for path, label in verdict.taint_summary.items()
+        if label.integrity == INTEGRITY_UNTRUSTED
+    ]
     return verdict
 
 
