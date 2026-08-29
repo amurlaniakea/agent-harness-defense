@@ -7,7 +7,7 @@ honestly claim. Each entry references the audit / paper that motivated it.
 
 **Status:** Implemented in v0.2.0 — see `ROADMAP.md` for the direction.
 
-**What the code does now (v0.2.0):**
+**What the code does now (v0.2.0 + adapter 002):**
 - Dual-lattice IFC (confidentiality + integrity) over an explicit
   declarative `Plan` (`agent_harness_defense.ifc`). `SourceTag`,
   `Label` (componentwise join: confidentiality = max, integrity = min),
@@ -67,3 +67,17 @@ drive a real agent loop, so the cross-iteration guarantee is structural
 (typed signature + retained state) but is not exercised by the bundled
 `ahd eval` command. Wiring it to a real agent harness (e.g. one of the 6
 harnesses from arXiv:2608.27299) is roadmap work.
+
+## 5. No declarative-Plan generator existed until adapter 002 (CLOSED as EXAMPLE, 2026-08-29)
+
+Before feature 002, every caller had to hand-write the `Plan` (the §1 dual-lattice
+work). Feature 002 ships `agent_harness_defense/adapter/` — a minimal but REAL
+example that translates Anthropic tool-calls into `PlanStep`s via `AgentSession`
++ `CassettePlayer`, plus `examples/anthropic_incident_report/` demonstrating the
+`INCIDENT_REPORT_INJECTION` vector end-to-end (with a non-vacuous "teeth" test).
+
+HONEST SCOPE: this is an **example adapter**, not a generic agent-integration
+framework. It covers the Anthropic tool-calling shape only; OpenAI/MCP and a
+full autonomous loop are separate features. The mechanical mapping is fail-closed
+for `bash`/`execute` (`value_source="repo.cmd"` → UNTRUSTED → denied) because the
+shell can move data the Plan never sees (verified in Spec 002 §2.1).

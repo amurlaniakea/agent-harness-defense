@@ -4,6 +4,36 @@ All notable changes to `agent-harness-defense` are documented here. The format
 is loosely based on [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2-adapter / feature 002] — 2026-08-29 (v0.3-precursor, no version bump yet)
+
+Feature 002 ships an example adapter that connects the IFC to real Anthropic
+tool-calling. The version stays 0.2.0; the v0.3.0 bump lands with feature 003
+(label-preserving persistence), which builds on `AgentSession`.
+
+### Added
+- `agent_harness_defense.adapter.tool_map` — mechanical `tool_call → PlanStep`
+  mapping (Spec 002 §2). `bash`/`execute` map to `value_source="repo.cmd"`
+  (UNTRUSTED, fail-closed) so shell-borne exfiltration is denied by default.
+  Verified consequence (Spec §2.1): the original `value_source=None` mapping left
+  `bash("echo $SECRET > incident-report.md")` ADMITTED; the new mapping denies it.
+- `agent_harness_defense.adapter.session.AgentSession` — drives multiple
+  `run_admission` calls, reusing `LoopStateMonitor` across iterations, with a
+  `pre_evaluate` hook reserved for feature 003.
+- `agent_harness_defense.adapter.cassette.CassettePlayer` — offline-deterministic
+  replay of API responses; the real call only runs under `AHD_RECORD=1` +
+  `ANTHROPIC_API_KEY`. CI never imports `anthropic` nor touches the network.
+- `examples/anthropic_incident_report/` — end-to-end demo of the
+  `INCIDENT_REPORT_INJECTION` vector with a non-vacuous "teeth" test
+  (`RUN_ADMISSION=0` materializes the attack on disk).
+- 14 new tests: `test_adapter_plan` (AC-ADAPT-1), `test_cassette_offline`
+  (AC-ADAPT-3 offline half), `test_session_loop` (AC-ADAPT-2 + AC-ADAPT-5),
+  `test_example_cassette` (AC-ADAPT-3 end-to-end + teeth).
+
+### Notes / honest scope
+- This is an **example adapter**, not a generic agent-integration framework
+  (KNOWN_ISSUES §5). Anthropic only; OpenAI/MCP and a full autonomous loop are
+  separate features.
+
 ## [0.2.0] — 2026-08-29
 
 ### Breaking changes

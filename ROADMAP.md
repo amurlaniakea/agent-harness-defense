@@ -19,6 +19,24 @@ Plan-First Information-Flow Control):
 - The v0.1 heuristic is retained as a SECOND signal (`flagged_by_keyword` /
   `cross_iteration_signal`), not the decision.
 
+## CLOSED: adapter with real harness (feature 002, 2026-08-29)
+
+Feature 002 (v0.3-precursor) ships `agent_harness_defense/adapter/` — a minimal
+but REAL example connecting the IFC to Anthropic tool-calling:
+
+- `tool_map.build_plan` — mechanical, fail-closed `tool_call → PlanStep` mapping
+  (Spec 002 §2). `bash`/`execute` map to `value_source="repo.cmd"` (UNTRUSTED) so
+  the IFC denies shell-borne exfiltration by default (verified §2.1).
+- `session.AgentSession` — the loop that reuses `LoopStateMonitor` across agent
+  iterations and exposes the `pre_evaluate` hook reserved for feature 003.
+- `cassette.CassettePlayer` — offline-deterministic replay of API responses; the
+  real call only runs under `AHD_RECORD=1` + `ANTHROPIC_API_KEY` (CI never calls it).
+- `examples/anthropic_incident_report/` — end-to-end demo of the
+  `INCIDENT_REPORT_INJECTION` vector with a non-vacuous "teeth" test.
+
+This is an **example adapter**, not a generic integration framework (KNOWN_ISSUES
+§5). It paves the way for feature 003 (label-preserving persistence → v0.3.0).
+
 ## v0.3 (post-v0.2) — remaining work
 
 - **Label-preserving persistence between iterations** (arXiv:2608.27234
